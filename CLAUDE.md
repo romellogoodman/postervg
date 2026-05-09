@@ -44,7 +44,6 @@ linters do not catch interaction regressions in an editor like this.
   `src/App.scss` — follow what's already there rather than inventing new ones.
 - **Color + spacing tokens** are CSS custom properties at the top of
   `src/App.scss`. Use them instead of hard-coding values.
-- **Env vars** must be prefixed `VITE_`; read via `import.meta.env.VITE_*`.
 
 ## Non-goals
 
