@@ -1,8 +1,18 @@
-# Prototype Boilerplate
+# postervg
 
-A minimal React boilerplate for rapid prototyping with Claude Code.
+A browser tool for composing SVGs in layers.
 
-React 19 + Vite + SCSS with BEM conventions.
+Drop SVG files onto the canvas, draw primitives alongside them, arrange
+everything in a layer stack, and export the result as a single SVG.
+
+## Features
+
+- **Drop SVGs**: drag any `.svg` file onto the canvas to place it as a layer
+- **Shape Tools**: rectangle, ellipse, line — click-drag to draw
+- **Select & Transform**: move, resize, rotate (hold Shift to snap rotation)
+- **Fill / Stroke**: paired fill and stroke swatches with swap, none, and a custom color picker
+- **Layers Panel**: reorder, hide, lock, rename, delete
+- **Export**: save the composition as a standalone `.svg`
 
 ## Quick Start
 
@@ -10,6 +20,24 @@ React 19 + Vite + SCSS with BEM conventions.
 npm install
 npm run dev
 ```
+
+## Keyboard
+
+| key | action |
+| --- | --- |
+| `V` | select tool |
+| `R` | rectangle |
+| `O` | ellipse |
+| `L` | line |
+| `⌫` / `Del` | delete selected |
+| `⌘D` / `Ctrl+D` | duplicate selected |
+| `Esc` | deselect |
+
+## Tech Stack
+
+- React 19 + Vite
+- SVG DOM rendering (no canvas library)
+- SCSS with BEM conventions
 
 ## Available Scripts
 
@@ -23,10 +51,6 @@ npm run preview      # Preview production build
 npm run clean        # Remove build artifacts
 ```
 
-## Environment Variables
-
-Copy `.env.example` to `.env.local` and configure as needed. All variables must be prefixed with `VITE_`.
-
 ## Project Guidelines
 
-See [CLAUDE.md](CLAUDE.md) for file structure conventions, CSS/SCSS guidelines, and other project-specific instructions.
+See [CLAUDE.md](CLAUDE.md) for development conventions.
