@@ -40,12 +40,38 @@ function parseSvgFile(text) {
     vw = attrW;
     vh = attrH;
   }
+  // Preserve root-level presentation attributes (fill, stroke, class, style, etc.)
+  // so paths that rely on inherited styling from the root render correctly.
+  const overridden = new Set([
+    "x",
+    "y",
+    "width",
+    "height",
+    "viewBox",
+    "xmlns",
+    "xmlns:xlink",
+    "preserveaspectratio",
+  ]);
+  const rootAttrs = {};
+  for (const a of root.attributes) {
+    if (!overridden.has(a.name.toLowerCase())) rootAttrs[a.name] = a.value;
+  }
   return {
     viewBox: `${vx} ${vy} ${vw} ${vh}`,
     innerHtml: root.innerHTML,
+    rootAttrs,
     naturalW: attrW,
     naturalH: attrH,
   };
+}
+
+function serializeAttrs(attrs) {
+  return Object.entries(attrs || {})
+    .map(
+      ([k, v]) =>
+        `${k}="${String(v).replace(/&/g, "&amp;").replace(/"/g, "&quot;")}"`,
+    )
+    .join(" ");
 }
 
 function bboxCenter(l) {
@@ -112,7 +138,8 @@ function serializeLayerToSvg(l) {
     return `<line x1="${l.x}" y1="${l.y}" x2="${l.x + l.width}" y2="${l.y + l.height}" stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${rot}/>`;
   }
   if (l.type === "svg") {
-    return `<g${rot}><svg x="${l.x}" y="${l.y}" width="${l.width}" height="${l.height}" viewBox="${l.viewBox}" preserveAspectRatio="xMidYMid meet">${l.svgContent}</svg></g>`;
+    const extra = l.rootAttrs ? " " + serializeAttrs(l.rootAttrs) : "";
+    return `<g${rot}><svg x="${l.x}" y="${l.y}" width="${l.width}" height="${l.height}" viewBox="${l.viewBox}" preserveAspectRatio="xMidYMid meet"${extra}>${l.svgContent}</svg></g>`;
   }
   return "";
 }
@@ -391,6 +418,7 @@ function App() {
           rotation: 0,
           viewBox: parsed.viewBox,
           svgContent: parsed.innerHtml,
+          rootAttrs: parsed.rootAttrs,
         });
       }
       if (news.length) {
@@ -840,20 +868,9 @@ function LayerNode({ layer, selected }) {
     );
   }
   if (layer.type === "svg") {
-    return (
-      <g {...common}>
-        <svg
-          x={layer.x}
-          y={layer.y}
-          width={layer.width}
-          height={layer.height}
-          viewBox={layer.viewBox}
-          preserveAspectRatio="xMidYMid meet"
-          overflow="visible"
-          dangerouslySetInnerHTML={{ __html: layer.svgContent }}
-        />
-      </g>
-    );
+    const extra = layer.rootAttrs ? " " + serializeAttrs(layer.rootAttrs) : "";
+    const inner = `<svg x="${layer.x}" y="${layer.y}" width="${layer.width}" height="${layer.height}" viewBox="${layer.viewBox}" preserveAspectRatio="xMidYMid meet" overflow="visible"${extra}>${layer.svgContent}</svg>`;
+    return <g {...common} dangerouslySetInnerHTML={{ __html: inner }} />;
   }
   return null;
 }
