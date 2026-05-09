@@ -870,7 +870,22 @@ function LayerNode({ layer, selected }) {
   if (layer.type === "svg") {
     const extra = layer.rootAttrs ? " " + serializeAttrs(layer.rootAttrs) : "";
     const inner = `<svg x="${layer.x}" y="${layer.y}" width="${layer.width}" height="${layer.height}" viewBox="${layer.viewBox}" preserveAspectRatio="xMidYMid meet" overflow="visible"${extra}>${layer.svgContent}</svg>`;
-    return <g {...common} dangerouslySetInnerHTML={{ __html: inner }} />;
+    return (
+      <g {...common}>
+        <rect
+          x={layer.x}
+          y={layer.y}
+          width={layer.width}
+          height={layer.height}
+          fill="transparent"
+          pointerEvents="all"
+        />
+        <g
+          pointerEvents="none"
+          dangerouslySetInnerHTML={{ __html: inner }}
+        />
+      </g>
+    );
   }
   return null;
 }
