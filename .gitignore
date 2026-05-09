@@ -20,6 +20,9 @@ dist-ssr
 .env.*.local
 *.local
 
+# Local reference screenshots
+.ref/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
