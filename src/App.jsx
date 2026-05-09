@@ -90,7 +90,8 @@ function screenToLocal(layer, px, py) {
   return { lx, ly };
 }
 
-function defaultLayerForShape(type, x, y, w, h, fill) {
+function defaultLayerForShape(type, x, y, w, h, paint) {
+  // paint: { fill, stroke, strokeWidth }
   const base = {
     id: nextId(),
     type,
@@ -109,13 +110,15 @@ function defaultLayerForShape(type, x, y, w, h, fill) {
     width: w,
     height: h,
     rotation: 0,
-    fill,
-    stroke: "#1b1b1b",
-    strokeWidth: type === "line" ? 2 : 0,
+    fill: paint.fill,
+    stroke: paint.stroke,
+    strokeWidth: paint.stroke === "none" ? 0 : paint.strokeWidth,
   };
   if (type === "line") {
+    // Lines have no interior; use stroke (fallback to fill if stroke is none).
     base.fill = "none";
-    base.stroke = fill;
+    base.stroke = paint.stroke !== "none" ? paint.stroke : paint.fill;
+    base.strokeWidth = Math.max(1, paint.strokeWidth || 2);
   }
   return base;
 }
@@ -148,7 +151,10 @@ function App() {
   const [layers, setLayers] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [tool, setTool] = useState("select");
-  const [fill, setFill] = useState("#1b1b1b");
+  const [fillColor, setFillColor] = useState("#1b1b1b");
+  const [strokeColor, setStrokeColor] = useState("none");
+  const [strokeWidth, setStrokeWidth] = useState(2);
+  const [activeTarget, setActiveTarget] = useState("fill"); // 'fill' | 'stroke'
   const [drawing, setDrawing] = useState(null); // { type, start, current }
   const [drag, setDrag] = useState(null); // { mode, layerId, startPointer, startLayer, handle? }
   const [dropping, setDropping] = useState(false);
@@ -326,16 +332,16 @@ function App() {
       const w = Math.abs(current.x - start.x);
       const h = Math.abs(current.y - start.y);
       if (w > 2 || h > 2 || type === "line") {
+        const paint = { fill: fillColor, stroke: strokeColor, strokeWidth };
         let layer;
         if (type === "line") {
-          // Line uses raw endpoints, encoded as x,y + width,height (dx,dy)
           layer = defaultLayerForShape(
             "line",
             start.x,
             start.y,
             current.x - start.x,
             current.y - start.y,
-            fill,
+            paint,
           );
         } else {
           layer = defaultLayerForShape(
@@ -344,7 +350,7 @@ function App() {
             y,
             Math.max(w, 2),
             Math.max(h, 2),
-            fill,
+            paint,
           );
         }
         setLayers((prev) => [...prev, layer]);
@@ -486,6 +492,9 @@ ${body}
   const preview = useMemo(() => {
     if (!drawing) return null;
     const { type, start, current } = drawing;
+    const previewFill = fillColor === "none" ? "transparent" : fillColor;
+    const previewStroke = strokeColor === "none" ? "#1b1b1b" : strokeColor;
+    const lineStroke = strokeColor !== "none" ? strokeColor : fillColor;
     if (type === "line") {
       return (
         <line
@@ -493,8 +502,8 @@ ${body}
           y1={start.y}
           x2={current.x}
           y2={current.y}
-          stroke={fill}
-          strokeWidth="2"
+          stroke={lineStroke === "none" ? "#1b1b1b" : lineStroke}
+          strokeWidth={Math.max(1, strokeWidth || 2)}
           strokeDasharray="4 3"
         />
       );
@@ -510,9 +519,9 @@ ${body}
           y={y}
           width={w}
           height={h}
-          fill={fill}
+          fill={previewFill}
           opacity="0.6"
-          stroke="#1b1b1b"
+          stroke={previewStroke}
           strokeDasharray="4 3"
         />
       );
@@ -523,14 +532,14 @@ ${body}
           cy={y + h / 2}
           rx={w / 2}
           ry={h / 2}
-          fill={fill}
+          fill={previewFill}
           opacity="0.6"
-          stroke="#1b1b1b"
+          stroke={previewStroke}
           strokeDasharray="4 3"
         />
       );
     return null;
-  }, [drawing, fill]);
+  }, [drawing, fillColor, strokeColor, strokeWidth]);
 
   return (
     <div className="editor">
@@ -559,33 +568,18 @@ ${body}
           </div>
         </div>
 
-        <div className="sidebar__section">
-          <div className="sidebar__label">Color</div>
-          <div className="sidebar__swatches">
-            {PALETTE.map((c) => (
-              <button
-                key={c.value}
-                className={`sidebar__swatch${fill === c.value ? " sidebar__swatch--active" : ""}`}
-                style={{ background: c.value }}
-                onClick={() => {
-                  setFill(c.value);
-                  if (selected && !selected.locked) {
-                    setLayers((prev) =>
-                      prev.map((l) =>
-                        l.id === selected.id
-                          ? selected.type === "line"
-                            ? { ...l, stroke: c.value }
-                            : { ...l, fill: c.value }
-                          : l,
-                      ),
-                    );
-                  }
-                }}
-                title={c.name}
-              />
-            ))}
-          </div>
-        </div>
+        <PaintSection
+          selected={selected}
+          setLayers={setLayers}
+          fillColor={fillColor}
+          setFillColor={setFillColor}
+          strokeColor={strokeColor}
+          setStrokeColor={setStrokeColor}
+          strokeWidth={strokeWidth}
+          setStrokeWidth={setStrokeWidth}
+          activeTarget={activeTarget}
+          setActiveTarget={setActiveTarget}
+        />
 
         {selected && (
           <div className="sidebar__section">
@@ -795,6 +789,262 @@ ${body}
         </ul>
       </aside>
     </div>
+  );
+}
+
+function PaintSection({
+  selected,
+  setLayers,
+  fillColor,
+  setFillColor,
+  strokeColor,
+  setStrokeColor,
+  strokeWidth,
+  setStrokeWidth,
+  activeTarget,
+  setActiveTarget,
+}) {
+  // When a layer is selected, the indicator reflects its paint; swatch clicks
+  // mutate that layer. With no selection, clicks adjust the defaults used for
+  // new shapes.
+  const displayFill = selected ? selected.fill ?? "none" : fillColor;
+  const displayStroke = selected
+    ? selected.strokeWidth
+      ? selected.stroke ?? "none"
+      : "none"
+    : strokeColor;
+  const displayStrokeWidth = selected
+    ? selected.strokeWidth || 0
+    : strokeWidth;
+
+  const applyColor = (color) => {
+    if (selected && !selected.locked) {
+      setLayers((prev) =>
+        prev.map((l) => {
+          if (l.id !== selected.id) return l;
+          if (activeTarget === "fill") return { ...l, fill: color };
+          const sw = l.strokeWidth || 2;
+          return { ...l, stroke: color, strokeWidth: color === "none" ? 0 : sw };
+        }),
+      );
+    } else if (activeTarget === "fill") {
+      setFillColor(color);
+    } else {
+      setStrokeColor(color);
+    }
+  };
+
+  const applyNone = () => applyColor("none");
+
+  const applyStrokeWidth = (w) => {
+    if (selected && !selected.locked) {
+      setLayers((prev) =>
+        prev.map((l) =>
+          l.id === selected.id
+            ? { ...l, strokeWidth: Math.max(0, w) }
+            : l,
+        ),
+      );
+    } else {
+      setStrokeWidth(Math.max(0, w));
+    }
+  };
+
+  const swap = () => {
+    if (selected && !selected.locked) {
+      setLayers((prev) =>
+        prev.map((l) => {
+          if (l.id !== selected.id) return l;
+          const newFill = l.strokeWidth ? l.stroke : "none";
+          const newStroke = l.fill;
+          return {
+            ...l,
+            fill: newFill,
+            stroke: newStroke === "none" ? l.stroke : newStroke,
+            strokeWidth: newStroke === "none" ? 0 : l.strokeWidth || 2,
+          };
+        }),
+      );
+    } else {
+      setFillColor(strokeColor);
+      setStrokeColor(fillColor);
+    }
+  };
+
+  const resetDefaults = () => {
+    if (selected && !selected.locked) {
+      setLayers((prev) =>
+        prev.map((l) =>
+          l.id === selected.id
+            ? {
+                ...l,
+                fill: "#ffffff",
+                stroke: "#1b1b1b",
+                strokeWidth: l.strokeWidth || 2,
+              }
+            : l,
+        ),
+      );
+    } else {
+      setFillColor("#ffffff");
+      setStrokeColor("#1b1b1b");
+      setStrokeWidth(2);
+    }
+  };
+
+  return (
+    <div className="sidebar__section">
+      <div className="sidebar__label">Fill / Stroke</div>
+      <div className="paint">
+        <div className="paint__indicator">
+          <PaintBox
+            color={activeTarget === "stroke" ? displayStroke : displayFill}
+            kind={activeTarget === "stroke" ? "stroke" : "fill"}
+            active={true}
+            onClick={() => {}}
+            className="paint__box paint__box--front"
+          />
+          <PaintBox
+            color={activeTarget === "stroke" ? displayFill : displayStroke}
+            kind={activeTarget === "stroke" ? "fill" : "stroke"}
+            active={false}
+            onClick={() =>
+              setActiveTarget(activeTarget === "fill" ? "stroke" : "fill")
+            }
+            className="paint__box paint__box--back"
+          />
+          <button
+            className="paint__swap"
+            onClick={swap}
+            title="Swap fill and stroke (X)"
+            aria-label="Swap fill and stroke"
+          >
+            ⇅
+          </button>
+        </div>
+        <div className="paint__meta">
+          <div className="paint__meta-label">
+            {activeTarget === "fill" ? "FILL" : "STROKE"}
+          </div>
+          <div className="paint__meta-value">
+            {activeTarget === "fill"
+              ? displayFill === "none"
+                ? "NONE"
+                : displayFill.toUpperCase()
+              : displayStroke === "none"
+                ? "NONE"
+                : displayStroke.toUpperCase()}
+          </div>
+          <div className="paint__quick">
+            <button
+              className="paint__quick-btn"
+              onClick={applyNone}
+              title="Set to none"
+            >
+              <span className="paint__none-glyph" aria-hidden />
+              NONE
+            </button>
+            <button
+              className="paint__quick-btn"
+              onClick={resetDefaults}
+              title="Default colors (white fill, black stroke)"
+            >
+              DEFAULT
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="sidebar__swatches" style={{ marginTop: 10 }}>
+        {PALETTE.map((c) => {
+          const isActive =
+            (activeTarget === "fill" ? displayFill : displayStroke) === c.value;
+          return (
+            <button
+              key={c.value}
+              className={`sidebar__swatch${isActive ? " sidebar__swatch--active" : ""}`}
+              style={{ background: c.value }}
+              onClick={() => applyColor(c.value)}
+              title={c.name}
+            />
+          );
+        })}
+        <label
+          className="sidebar__swatch sidebar__swatch--picker"
+          title="Custom color"
+          style={{
+            background:
+              (activeTarget === "fill" ? displayFill : displayStroke) !==
+                "none" &&
+              !PALETTE.some(
+                (c) =>
+                  c.value ===
+                  (activeTarget === "fill" ? displayFill : displayStroke),
+              )
+                ? activeTarget === "fill"
+                  ? displayFill
+                  : displayStroke
+                : undefined,
+          }}
+        >
+          <input
+            type="color"
+            value={
+              (activeTarget === "fill" ? displayFill : displayStroke) ===
+              "none"
+                ? "#000000"
+                : activeTarget === "fill"
+                  ? displayFill
+                  : displayStroke
+            }
+            onChange={(e) => applyColor(e.target.value)}
+          />
+          <span className="paint__picker-glyph">+</span>
+        </label>
+      </div>
+
+      <label className="sidebar__field" style={{ marginTop: 10 }}>
+        <span className="sidebar__field-label">WIDTH</span>
+        <input
+          className="sidebar__field-input"
+          type="number"
+          min="0"
+          value={Math.round(displayStrokeWidth)}
+          onChange={(e) => {
+            const n = Number(e.target.value);
+            if (!Number.isNaN(n)) applyStrokeWidth(n);
+          }}
+        />
+      </label>
+    </div>
+  );
+}
+
+function PaintBox({ color, kind, active, onClick, className }) {
+  const isNone = color === "none";
+  const fillStyle = kind === "fill" ? (isNone ? "transparent" : color) : "none";
+  const strokeStyle = kind === "stroke" ? (isNone ? "transparent" : color) : "none";
+  return (
+    <button
+      type="button"
+      className={`${className}${active ? " paint__box--active" : ""}`}
+      onClick={onClick}
+      title={kind === "fill" ? "Fill" : "Stroke"}
+    >
+      <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden>
+        {kind === "fill" ? (
+          <rect x="2" y="2" width="20" height="20" fill={fillStyle} stroke="#1b1b1b" strokeWidth="1" />
+        ) : (
+          <rect x="2" y="2" width="20" height="20" fill="transparent" stroke={strokeStyle === "none" ? "#1b1b1b" : strokeStyle} strokeWidth="4" />
+        )}
+        {kind === "stroke" && (
+          <rect x="7" y="7" width="10" height="10" fill="#ffffff" stroke="none" />
+        )}
+        {isNone && (
+          <line x1="2" y1="22" x2="22" y2="2" stroke="#cc4722" strokeWidth="2" />
+        )}
+      </svg>
+    </button>
   );
 }
 
