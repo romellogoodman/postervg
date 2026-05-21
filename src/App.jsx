@@ -25,6 +25,41 @@ const TOOLS = [
 const TEXT_FONT_FAMILY = "Inter, system-ui, sans-serif";
 const TEXT_LINE_HEIGHT = 1.2;
 
+// Curated subset of CSS blend modes — the ones users reach for on posters.
+const BLEND_OPTIONS = [
+  "normal",
+  "multiply",
+  "screen",
+  "overlay",
+  "darken",
+  "lighten",
+  "difference",
+];
+
+// Dash preset → SVG `stroke-dasharray` value. Solid is the absence of a
+// dasharray and must be skipped on serialization.
+const DASH_PRESETS = {
+  solid: null,
+  dash: "8 4",
+  dot: "2 4",
+  "dash-dot": "8 4 2 4",
+};
+
+const CAP_OPTIONS = ["butt", "round", "square"];
+const JOIN_OPTIONS = ["miter", "round", "bevel"];
+
+// Convenience: read style properties with defaults so layers created before
+// these fields existed still render correctly.
+const layerOpacity = (l) => (l.opacity == null ? 1 : l.opacity);
+const layerBlend = (l) =>
+  l.blendMode && l.blendMode !== "normal" ? l.blendMode : null;
+const layerDashArray = (l) => {
+  const preset = l.strokeDash ?? "solid";
+  return DASH_PRESETS[preset] ?? null;
+};
+const layerCap = (l) => l.strokeCap ?? "butt";
+const layerJoin = (l) => l.strokeJoin ?? "miter";
+
 let _uid = 0;
 const nextId = () => `l${Date.now().toString(36)}${(_uid++).toString(36)}`;
 
@@ -113,6 +148,11 @@ function defaultTextLayer(x, y, paint) {
     fontFamily: TEXT_FONT_FAMILY,
     fontWeight,
     textAlign: "start",
+    opacity: 1,
+    blendMode: "normal",
+    strokeDash: "solid",
+    strokeCap: "butt",
+    strokeJoin: "miter",
   };
 }
 
@@ -205,6 +245,11 @@ function defaultLayerForShape(type, x, y, w, h, paint) {
     fill: paint.fill,
     stroke: paint.stroke,
     strokeWidth: paint.stroke === "none" ? 0 : paint.strokeWidth,
+    opacity: 1,
+    blendMode: "normal",
+    strokeDash: "solid",
+    strokeCap: "butt",
+    strokeJoin: "miter",
   };
   if (type === "line") {
     // Lines have no interior; use stroke (fallback to fill if stroke is none).
@@ -221,20 +266,35 @@ function serializeLayerToSvg(l) {
   const rot = l.rotation
     ? ` transform="rotate(${l.rotation} ${cx} ${cy})"`
     : "";
+  // Common style attrs: opacity, blend mode, and stroke dash/cap/join. Emit
+  // only when they differ from the SVG defaults, to keep exports tidy.
+  const opacity = layerOpacity(l);
+  const blend = layerBlend(l);
+  const opacityPart = opacity < 1 ? ` opacity="${opacity}"` : "";
+  const stylePart = blend ? ` style="mix-blend-mode:${blend}"` : "";
+  const dash = layerDashArray(l);
+  const cap = layerCap(l);
+  const join = layerJoin(l);
+  const dashPart = dash ? ` stroke-dasharray="${dash}"` : "";
+  const capPart = cap !== "butt" ? ` stroke-linecap="${cap}"` : "";
+  const joinPart = join !== "miter" ? ` stroke-linejoin="${join}"` : "";
+  const strokeExtras = `${dashPart}${capPart}${joinPart}`;
   if (l.type === "rect") {
-    return `<rect x="${l.x}" y="${l.y}" width="${l.width}" height="${l.height}" fill="${l.fill}"${l.strokeWidth ? ` stroke="${l.stroke}" stroke-width="${l.strokeWidth}"` : ""}${rot}/>`;
+    return `<rect x="${l.x}" y="${l.y}" width="${l.width}" height="${l.height}" fill="${l.fill}"${l.strokeWidth ? ` stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${strokeExtras}` : ""}${opacityPart}${stylePart}${rot}/>`;
   }
   if (l.type === "ellipse") {
     const rx = l.width / 2;
     const ry = l.height / 2;
-    return `<ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="${l.fill}"${l.strokeWidth ? ` stroke="${l.stroke}" stroke-width="${l.strokeWidth}"` : ""}${rot}/>`;
+    return `<ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="${l.fill}"${l.strokeWidth ? ` stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${strokeExtras}` : ""}${opacityPart}${stylePart}${rot}/>`;
   }
   if (l.type === "line") {
-    return `<line x1="${l.x}" y1="${l.y}" x2="${l.x + l.width}" y2="${l.y + l.height}" stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${rot}/>`;
+    return `<line x1="${l.x}" y1="${l.y}" x2="${l.x + l.width}" y2="${l.y + l.height}" stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${strokeExtras}${opacityPart}${stylePart}${rot}/>`;
   }
   if (l.type === "svg") {
     const extra = l.rootAttrs ? " " + serializeAttrs(l.rootAttrs) : "";
-    return `<g${rot}><svg x="${l.x}" y="${l.y}" width="${l.width}" height="${l.height}" viewBox="${l.viewBox}" preserveAspectRatio="xMidYMid meet"${extra}>${l.svgContent}</svg></g>`;
+    // Opacity + blend go on the wrapping <g> so they apply to the whole
+    // imported subtree.
+    return `<g${opacityPart}${stylePart}${rot}><svg x="${l.x}" y="${l.y}" width="${l.width}" height="${l.height}" viewBox="${l.viewBox}" preserveAspectRatio="xMidYMid meet"${extra}>${l.svgContent}</svg></g>`;
   }
   if (l.type === "text") {
     const escape = (s) =>
@@ -251,9 +311,9 @@ function serializeLayerToSvg(l) {
       )
       .join("");
     const strokePart = l.strokeWidth
-      ? ` stroke="${l.stroke}" stroke-width="${l.strokeWidth}"`
+      ? ` stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${strokeExtras}`
       : "";
-    return `<text x="${tx}" y="${l.y}" font-size="${l.fontSize}" font-family="${escape(l.fontFamily)}" font-weight="${l.fontWeight}" text-anchor="${l.textAlign}" dominant-baseline="hanging" fill="${l.fill}"${strokePart}${rot}>${tspans}</text>`;
+    return `<text x="${tx}" y="${l.y}" font-size="${l.fontSize}" font-family="${escape(l.fontFamily)}" font-weight="${l.fontWeight}" text-anchor="${l.textAlign}" dominant-baseline="hanging" fill="${l.fill}"${strokePart}${opacityPart}${stylePart}${rot}>${tspans}</text>`;
   }
   return "";
 }
@@ -758,6 +818,8 @@ function App() {
           width: w,
           height: h,
           rotation: 0,
+          opacity: 1,
+          blendMode: "normal",
           viewBox: parsed.viewBox,
           svgContent: parsed.innerHtml,
           rootAttrs: parsed.rootAttrs,
@@ -987,6 +1049,49 @@ ${body}
                 }
               />
             </div>
+            <div className="sidebar__slider-row">
+              <span className="sidebar__field-label">Opacity</span>
+              <input
+                className="sidebar__slider"
+                type="range"
+                min="0"
+                max="100"
+                value={Math.round(layerOpacity(selected) * 100)}
+                onChange={(e) => {
+                  const v = Number(e.target.value) / 100;
+                  commit((prev) =>
+                    prev.map((l) =>
+                      l.id === selected.id ? { ...l, opacity: v } : l,
+                    ),
+                  );
+                }}
+              />
+              <span className="sidebar__slider-value">
+                {Math.round(layerOpacity(selected) * 100)}
+              </span>
+            </div>
+            <label className="sidebar__field sidebar__field--wide">
+              <span className="sidebar__field-label">Blend</span>
+              <select
+                className="sidebar__select"
+                value={selected.blendMode ?? "normal"}
+                onChange={(e) =>
+                  commit((prev) =>
+                    prev.map((l) =>
+                      l.id === selected.id
+                        ? { ...l, blendMode: e.target.value }
+                        : l,
+                    ),
+                  )
+                }
+              >
+                {BLEND_OPTIONS.map((b) => (
+                  <option key={b} value={b}>
+                    {b.toUpperCase()}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
         )}
 
@@ -1494,7 +1599,67 @@ function PaintSection({
           }}
         />
       </label>
+      <StrokeStyleRow selected={selected} commit={commit} />
     </div>
+  );
+}
+
+// Stroke-style controls (dash pattern, cap, join). Only meaningful when a
+// layer is selected; hidden otherwise because the defaults for new shapes
+// live in the defaultLayerForShape factory.
+function StrokeStyleRow({ selected, commit }) {
+  if (!selected || selected.locked) return null;
+  const setField = (field, value) =>
+    commit((prev) =>
+      prev.map((l) => (l.id === selected.id ? { ...l, [field]: value } : l)),
+    );
+  return (
+    <>
+      <label className="sidebar__field sidebar__field--wide" style={{ marginTop: 8 }}>
+        <span className="sidebar__field-label">DASH</span>
+        <select
+          className="sidebar__select"
+          value={selected.strokeDash ?? "solid"}
+          onChange={(e) => setField("strokeDash", e.target.value)}
+        >
+          {Object.keys(DASH_PRESETS).map((k) => (
+            <option key={k} value={k}>
+              {k.toUpperCase()}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="sidebar__segmented" style={{ marginTop: 6 }}>
+        <span className="sidebar__field-label">CAP</span>
+        <div className="sidebar__segmented-group">
+          {CAP_OPTIONS.map((cap) => (
+            <button
+              key={cap}
+              className={`sidebar__segmented-btn${(selected.strokeCap ?? "butt") === cap ? " sidebar__segmented-btn--active" : ""}`}
+              onClick={() => setField("strokeCap", cap)}
+              title={cap}
+            >
+              {cap[0].toUpperCase()}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="sidebar__segmented" style={{ marginTop: 6 }}>
+        <span className="sidebar__field-label">JOIN</span>
+        <div className="sidebar__segmented-group">
+          {JOIN_OPTIONS.map((join) => (
+            <button
+              key={join}
+              className={`sidebar__segmented-btn${(selected.strokeJoin ?? "miter") === join ? " sidebar__segmented-btn--active" : ""}`}
+              onClick={() => setField("strokeJoin", join)}
+              title={join}
+            >
+              {join[0].toUpperCase()}
+            </button>
+          ))}
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -1548,11 +1713,24 @@ function LayerNode({ layer, selected }) {
   const rot = layer.rotation
     ? `rotate(${layer.rotation} ${cx} ${cy})`
     : undefined;
+  const blend = layerBlend(layer);
+  // Render opacity combines the visibility fade (muted for hidden layers so
+  // the user can still find them) with the user-set layer opacity.
   const common = {
     "data-layer-id": layer.id,
-    opacity: layer.visible ? 1 : 0.15,
-    style: { pointerEvents: layer.locked ? "none" : "auto" },
+    opacity: (layer.visible ? 1 : 0.15) * layerOpacity(layer),
+    style: {
+      pointerEvents: layer.locked ? "none" : "auto",
+      ...(blend ? { mixBlendMode: blend } : {}),
+    },
     transform: rot,
+  };
+  // Stroke style extras (dash/cap/join) applied to any strokable element.
+  const dash = layerDashArray(layer);
+  const strokeStyle = {
+    ...(dash ? { strokeDasharray: dash } : {}),
+    strokeLinecap: layerCap(layer),
+    strokeLinejoin: layerJoin(layer),
   };
   if (layer.type === "rect") {
     return (
@@ -1565,6 +1743,7 @@ function LayerNode({ layer, selected }) {
         fill={layer.fill}
         stroke={layer.strokeWidth ? layer.stroke : "none"}
         strokeWidth={layer.strokeWidth}
+        {...strokeStyle}
       />
     );
   }
@@ -1579,6 +1758,7 @@ function LayerNode({ layer, selected }) {
         fill={layer.fill}
         stroke={layer.strokeWidth ? layer.stroke : "none"}
         strokeWidth={layer.strokeWidth}
+        {...strokeStyle}
       />
     );
   }
@@ -1592,6 +1772,7 @@ function LayerNode({ layer, selected }) {
         y2={layer.y + layer.height}
         stroke={layer.stroke}
         strokeWidth={Math.max(2, layer.strokeWidth || 2)}
+        {...strokeStyle}
       />
     );
   }
@@ -1638,6 +1819,7 @@ function LayerNode({ layer, selected }) {
           fill={layer.fill}
           stroke={layer.strokeWidth ? layer.stroke : "none"}
           strokeWidth={layer.strokeWidth || 0}
+          {...strokeStyle}
           textAnchor={layer.textAlign}
           dominantBaseline="hanging"
           pointerEvents="none"

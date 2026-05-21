@@ -15,13 +15,15 @@ React 19 + Vite + SCSS. No canvas library — everything is SVG DOM.
 All UI and logic live in two files (intentional for a prototype):
 
 - `src/App.jsx` — the entire editor, organized by helper + component
-  - `measureText` / `textAnchorX` / `defaultTextLayer` — text measurement + factory (`src/App.jsx:35`, `:80`, `:86`)
-  - `parseSvgFile` / `serializeAttrs` — SVG import (`:119`, `:160`)
-  - `defaultLayerForShape` / `serializeLayerToSvg` — layer model (`:185`, `:218`)
-  - `App` — state, pointer handlers, drop, keyboard, layout (`:261`)
-  - `PaintSection` / `PaintBox` — fill/stroke controls (`:1273`, `:1501`)
-  - `LayerNode` — per-layer SVG rendering (`:1546`)
-  - `SelectionOverlay` / `MultiSelectionOutline` — single-layer handles + multi-select outline (`:1662`, `:1739`)
+  - `measureText` / `textAnchorX` / `defaultTextLayer` — text measurement + factory (`src/App.jsx:70`, `:115`, `:121`)
+  - `parseSvgFile` / `serializeAttrs` — SVG import (`:159`, `:200`)
+  - `defaultLayerForShape` / `serializeLayerToSvg` — layer model (`:225`, `:263`)
+  - `App` — state, pointer handlers, drop, keyboard, layout (`:321`)
+  - `PaintSection` / `StrokeStyleRow` / `PaintBox` — fill + stroke controls, incl. dash/cap/join (`:1378`, `:1610`, `:1666`)
+  - `LayerNode` — per-layer SVG rendering (`:1711`)
+  - `SelectionOverlay` / `MultiSelectionOutline` — single-layer handles + multi-select outline (`:1844`, `:1921`)
+
+**Layer style attributes:** `opacity` (0..1), `blendMode` (one of `BLEND_OPTIONS`), `strokeDash` (key of `DASH_PRESETS`), `strokeCap`, `strokeJoin`. Render and export go through `layerOpacity` / `layerBlend` / `layerDashArray` / `layerCap` / `layerJoin` so legacy layers without the fields still draw.
 - `src/App.scss` — all styles, BEM, tokens at the top
 
 **State inside `App`:**

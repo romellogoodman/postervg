@@ -13,7 +13,8 @@ everything in a layer stack, and export the result as a single SVG.
 - **Undo / Redo**: `⌘Z` / `⌘⇧Z` on every discrete mutation; drags collapse into a single history entry.
 - **Select & Transform**: click, shift-click, or drag a marquee on empty canvas to select one or many layers; move, resize, rotate (hold Shift to snap rotation). Multi-select shows a dashed union outline and moves together; resize/rotate handles appear only for a single selection.
 - **Nudge**: arrow keys move the selection 1px; Shift+arrow moves 10px.
-- **Fill / Stroke**: paired fill and stroke swatches with swap, none, and a custom color picker
+- **Fill / Stroke**: paired fill and stroke swatches with swap, none, and a custom color picker; dash pattern (solid / dash / dot / dash-dot), line cap (butt / round / square), and line join (miter / round / bevel)
+- **Opacity / Blend**: per-layer opacity slider and CSS blend mode (multiply / screen / overlay / darken / lighten / difference), both preserved in exported SVG
 - **Layers Panel**: reorder, hide, lock, rename, delete
 - **Export**: save the composition as a standalone `.svg`
 
