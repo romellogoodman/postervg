@@ -15,15 +15,21 @@ React 19 + Vite + SCSS. No canvas library — everything is SVG DOM.
 All UI and logic live in two files (intentional for a prototype):
 
 - `src/App.jsx` — the entire editor, organized by helper + component
-  - `measureText` / `textAnchorX` / `defaultTextLayer` — text measurement + factory (`src/App.jsx:70`, `:115`, `:121`)
-  - `parseSvgFile` / `serializeAttrs` — SVG import (`:159`, `:200`)
-  - `defaultLayerForShape` / `serializeLayerToSvg` — layer model (`:225`, `:263`)
-  - `App` — state, pointer handlers, drop, keyboard, layout (`:321`)
-  - `PaintSection` / `StrokeStyleRow` / `PaintBox` — fill + stroke controls, incl. dash/cap/join (`:1378`, `:1610`, `:1666`)
-  - `LayerNode` — per-layer SVG rendering (`:1711`)
-  - `SelectionOverlay` / `MultiSelectionOutline` — single-layer handles + multi-select outline (`:1844`, `:1921`)
+  - `gradientLine` / `serializeGradientDef` / `fillPaintValue` — linear-gradient math + fill helper (`src/App.jsx:54`, `:66`, `:76`)
+  - `polygonPoints` — regular polygon + star inscribed in a bbox (`:79`)
+  - `measureText` / `textAnchorX` / `defaultTextLayer` — text measurement + factory (`:118`, `:163`, `:169`)
+  - `parseSvgFile` / `serializeAttrs` — SVG import (`:207`, `:248`)
+  - `defaultLayerForShape` / `serializeLayerToSvg` — layer model (`:273`, `:317`)
+  - `App` — state, pointer handlers, drop, keyboard, layout (`:379`)
+  - `PaintSection` / `StrokeStyleRow` / `PaintBox` — fill + stroke controls, incl. dash/cap/join (`:1615`, `:1877`, `:1933`)
+  - `LayerNode` — per-layer SVG rendering, emits gradient `<defs>` inline (`:1978`)
+  - `SelectionOverlay` / `MultiSelectionOutline` — single-layer handles + multi-select outline (`:2147`, `:2224`)
 
 **Layer style attributes:** `opacity` (0..1), `blendMode` (one of `BLEND_OPTIONS`), `strokeDash` (key of `DASH_PRESETS`), `strokeCap`, `strokeJoin`. Render and export go through `layerOpacity` / `layerBlend` / `layerDashArray` / `layerCap` / `layerJoin` so legacy layers without the fields still draw.
+
+**Fill paint:** a layer's fill is either its `fill` string (a color or `"none"`) or — when `fillGradient: { from, to, angle }` is set — a `url(#gr-<layerId>)` reference to a `<linearGradient>` defined via `serializeGradientDef` (export) or an inline `<defs>` sibling in `LayerNode` (canvas). Use `fillPaintValue(layer)` at every fill site.
+
+**Polygon:** one tool (`type: "polygon"`) parameterised by `sides` (3–24) and `starRatio` (0.1–1). `starRatio < 1` alternates outer/inner radii to produce stars.
 - `src/App.scss` — all styles, BEM, tokens at the top
 
 **State inside `App`:**

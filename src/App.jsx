@@ -19,6 +19,7 @@ const TOOLS = [
   { id: "rect", label: "RECT", key: "R" },
   { id: "ellipse", label: "ELLIPSE", key: "O" },
   { id: "line", label: "LINE", key: "L" },
+  { id: "polygon", label: "POLYGON", key: "P" },
   { id: "text", label: "TEXT", key: "T" },
 ];
 
@@ -47,6 +48,53 @@ const DASH_PRESETS = {
 
 const CAP_OPTIONS = ["butt", "round", "square"];
 const JOIN_OPTIONS = ["miter", "round", "bevel"];
+
+// Map a 0..359° angle to the linear-gradient vector in bounding-box units.
+// angle=0 is left→right, 90 is top→bottom — the web convention.
+function gradientLine(angle) {
+  // angle=0° → horizontal (left→right). angle=90° → vertical (top→bottom),
+  // since SVG y increases downward. The start/end line is centered on the
+  // bounding box in objectBoundingBox units.
+  const rad = (angle * Math.PI) / 180;
+  const dx = Math.cos(rad) / 2;
+  const dy = Math.sin(rad) / 2;
+  return { x1: 0.5 - dx, y1: 0.5 - dy, x2: 0.5 + dx, y2: 0.5 + dy };
+}
+
+const gradientId = (layer) => `gr-${layer.id}`;
+
+function serializeGradientDef(layer) {
+  const g = layer.fillGradient;
+  if (!g) return "";
+  const { x1, y1, x2, y2 } = gradientLine(g.angle ?? 90);
+  return `<linearGradient id="${gradientId(layer)}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"><stop offset="0" stop-color="${g.from}"/><stop offset="1" stop-color="${g.to}"/></linearGradient>`;
+}
+
+const fillPaintValue = (layer) =>
+  layer.fillGradient ? `url(#${gradientId(layer)})` : layer.fill;
+
+// Compute `<polygon points="...">` coordinates for a regular polygon or star
+// inscribed in the layer's bbox. `starRatio` < 1 alternates outer/inner radii
+// to form a star; 1 is a regular polygon. First vertex points up.
+function polygonPoints(layer) {
+  const cx = layer.x + layer.width / 2;
+  const cy = layer.y + layer.height / 2;
+  const rx = layer.width / 2;
+  const ry = layer.height / 2;
+  const sides = Math.max(3, Math.round(layer.sides ?? 5));
+  const ratio = Math.max(0.05, Math.min(1, layer.starRatio ?? 1));
+  const isStar = ratio < 1;
+  const n = isStar ? sides * 2 : sides;
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const t = -Math.PI / 2 + (i * 2 * Math.PI) / n;
+    const rScale = isStar && i % 2 === 1 ? ratio : 1;
+    const x = cx + rx * rScale * Math.cos(t);
+    const y = cy + ry * rScale * Math.sin(t);
+    pts.push(`${x.toFixed(2)},${y.toFixed(2)}`);
+  }
+  return pts.join(" ");
+}
 
 // Convenience: read style properties with defaults so layers created before
 // these fields existed still render correctly.
@@ -234,7 +282,9 @@ function defaultLayerForShape(type, x, y, w, h, paint) {
           ? "Ellipse"
           : type === "line"
             ? "Line"
-            : "Layer",
+            : type === "polygon"
+              ? "Polygon"
+              : "Layer",
     visible: true,
     locked: false,
     x,
@@ -251,6 +301,10 @@ function defaultLayerForShape(type, x, y, w, h, paint) {
     strokeCap: "butt",
     strokeJoin: "miter",
   };
+  if (type === "polygon") {
+    base.sides = 5;
+    base.starRatio = 1;
+  }
   if (type === "line") {
     // Lines have no interior; use stroke (fallback to fill if stroke is none).
     base.fill = "none";
@@ -279,16 +333,20 @@ function serializeLayerToSvg(l) {
   const capPart = cap !== "butt" ? ` stroke-linecap="${cap}"` : "";
   const joinPart = join !== "miter" ? ` stroke-linejoin="${join}"` : "";
   const strokeExtras = `${dashPart}${capPart}${joinPart}`;
+  const fillAttr = fillPaintValue(l);
   if (l.type === "rect") {
-    return `<rect x="${l.x}" y="${l.y}" width="${l.width}" height="${l.height}" fill="${l.fill}"${l.strokeWidth ? ` stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${strokeExtras}` : ""}${opacityPart}${stylePart}${rot}/>`;
+    return `<rect x="${l.x}" y="${l.y}" width="${l.width}" height="${l.height}" fill="${fillAttr}"${l.strokeWidth ? ` stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${strokeExtras}` : ""}${opacityPart}${stylePart}${rot}/>`;
   }
   if (l.type === "ellipse") {
     const rx = l.width / 2;
     const ry = l.height / 2;
-    return `<ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="${l.fill}"${l.strokeWidth ? ` stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${strokeExtras}` : ""}${opacityPart}${stylePart}${rot}/>`;
+    return `<ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="${fillAttr}"${l.strokeWidth ? ` stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${strokeExtras}` : ""}${opacityPart}${stylePart}${rot}/>`;
   }
   if (l.type === "line") {
     return `<line x1="${l.x}" y1="${l.y}" x2="${l.x + l.width}" y2="${l.y + l.height}" stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${strokeExtras}${opacityPart}${stylePart}${rot}/>`;
+  }
+  if (l.type === "polygon") {
+    return `<polygon points="${polygonPoints(l)}" fill="${fillAttr}"${l.strokeWidth ? ` stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${strokeExtras}` : ""}${opacityPart}${stylePart}${rot}/>`;
   }
   if (l.type === "svg") {
     const extra = l.rootAttrs ? " " + serializeAttrs(l.rootAttrs) : "";
@@ -313,7 +371,7 @@ function serializeLayerToSvg(l) {
     const strokePart = l.strokeWidth
       ? ` stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${strokeExtras}`
       : "";
-    return `<text x="${tx}" y="${l.y}" font-size="${l.fontSize}" font-family="${escape(l.fontFamily)}" font-weight="${l.fontWeight}" text-anchor="${l.textAlign}" dominant-baseline="hanging" fill="${l.fill}"${strokePart}${opacityPart}${stylePart}${rot}>${tspans}</text>`;
+    return `<text x="${tx}" y="${l.y}" font-size="${l.fontSize}" font-family="${escape(l.fontFamily)}" font-weight="${l.fontWeight}" text-anchor="${l.textAlign}" dominant-baseline="hanging" fill="${fillAttr}"${strokePart}${opacityPart}${stylePart}${rot}>${tspans}</text>`;
   }
   return "";
 }
@@ -443,6 +501,7 @@ function App() {
       else if (k === "r") setTool("rect");
       else if (k === "o") setTool("ellipse");
       else if (k === "l") setTool("line");
+      else if (k === "p") setTool("polygon");
       else if (k === "t") setTool("text");
       else if (k === "escape") clearSelection();
       else if (k === "backspace" || k === "delete") {
@@ -868,9 +927,16 @@ function App() {
 
   const doExport = () => {
     const body = layers.map(serializeLayerToSvg).join("\n");
+    // Hoist gradient definitions into a single top-level <defs> so each
+    // shape references its gradient by id.
+    const defs = layers
+      .map(serializeGradientDef)
+      .filter(Boolean)
+      .join("");
+    const defsBlock = defs ? `<defs>${defs}</defs>\n` : "";
     const out = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${CANVAS_W} ${CANVAS_H}" width="${CANVAS_W}" height="${CANVAS_H}">
-<rect width="${CANVAS_W}" height="${CANVAS_H}" fill="#ffffff"/>
+${defsBlock}<rect width="${CANVAS_W}" height="${CANVAS_H}" fill="#ffffff"/>
 ${body}
 </svg>`;
     const blob = new Blob([out], { type: "image/svg+xml" });
@@ -942,6 +1008,20 @@ ${body}
           strokeDasharray="4 3"
         />
       );
+    if (type === "polygon") {
+      // Preview uses the default polygon shape (pentagon) inscribed in the
+      // in-progress bbox so the user can see what they're about to commit.
+      const points = polygonPoints({ x, y, width: w, height: h, sides: 5, starRatio: 1 });
+      return (
+        <polygon
+          points={points}
+          fill={previewFill}
+          opacity="0.6"
+          stroke={previewStroke}
+          strokeDasharray="4 3"
+        />
+      );
+    }
     return null;
   }, [drawing, fillColor, strokeColor, strokeWidth]);
 
@@ -1092,6 +1172,163 @@ ${body}
                 ))}
               </select>
             </label>
+          </div>
+        )}
+
+        {selected && selected.fillGradient && (
+          <div className="sidebar__section">
+            <div className="sidebar__label">Gradient</div>
+            <div className="sidebar__gradient">
+              <label
+                className="sidebar__gradient-stop"
+                title="Gradient start color"
+              >
+                <span
+                  className="sidebar__gradient-swatch"
+                  style={{ background: selected.fillGradient.from }}
+                />
+                <input
+                  type="color"
+                  value={selected.fillGradient.from}
+                  onChange={(e) =>
+                    commit((prev) =>
+                      prev.map((l) =>
+                        l.id === selected.id
+                          ? {
+                              ...l,
+                              fillGradient: {
+                                ...l.fillGradient,
+                                from: e.target.value,
+                              },
+                            }
+                          : l,
+                      ),
+                    )
+                  }
+                />
+                <span className="sidebar__gradient-label">FROM</span>
+              </label>
+              <button
+                className="sidebar__gradient-swap"
+                onClick={() =>
+                  commit((prev) =>
+                    prev.map((l) =>
+                      l.id === selected.id
+                        ? {
+                            ...l,
+                            fillGradient: {
+                              ...l.fillGradient,
+                              from: l.fillGradient.to,
+                              to: l.fillGradient.from,
+                            },
+                          }
+                        : l,
+                    ),
+                  )
+                }
+                title="Swap stops"
+              >
+                ⇄
+              </button>
+              <label
+                className="sidebar__gradient-stop"
+                title="Gradient end color"
+              >
+                <span
+                  className="sidebar__gradient-swatch"
+                  style={{ background: selected.fillGradient.to }}
+                />
+                <input
+                  type="color"
+                  value={selected.fillGradient.to}
+                  onChange={(e) =>
+                    commit((prev) =>
+                      prev.map((l) =>
+                        l.id === selected.id
+                          ? {
+                              ...l,
+                              fillGradient: {
+                                ...l.fillGradient,
+                                to: e.target.value,
+                              },
+                            }
+                          : l,
+                      ),
+                    )
+                  }
+                />
+                <span className="sidebar__gradient-label">TO</span>
+              </label>
+            </div>
+            <div className="sidebar__slider-row" style={{ marginTop: 8 }}>
+              <span className="sidebar__field-label">Angle</span>
+              <input
+                className="sidebar__slider"
+                type="range"
+                min="0"
+                max="359"
+                value={selected.fillGradient.angle ?? 90}
+                onChange={(e) =>
+                  commit((prev) =>
+                    prev.map((l) =>
+                      l.id === selected.id
+                        ? {
+                            ...l,
+                            fillGradient: {
+                              ...l.fillGradient,
+                              angle: Number(e.target.value),
+                            },
+                          }
+                        : l,
+                    ),
+                  )
+                }
+              />
+              <span className="sidebar__slider-value">
+                {selected.fillGradient.angle ?? 90}°
+              </span>
+            </div>
+          </div>
+        )}
+
+        {selected && selected.type === "polygon" && (
+          <div className="sidebar__section">
+            <div className="sidebar__label">Polygon</div>
+            <div className="sidebar__fields">
+              <NumField
+                label="Sides"
+                value={selected.sides ?? 5}
+                onChange={(v) => {
+                  const sides = Math.max(3, Math.min(24, Math.round(v)));
+                  commit((prev) =>
+                    prev.map((l) =>
+                      l.id === selected.id ? { ...l, sides } : l,
+                    ),
+                  );
+                }}
+              />
+            </div>
+            <div className="sidebar__slider-row">
+              <span className="sidebar__field-label">Star</span>
+              <input
+                className="sidebar__slider"
+                type="range"
+                min="10"
+                max="100"
+                value={Math.round((selected.starRatio ?? 1) * 100)}
+                onChange={(e) => {
+                  const v = Number(e.target.value) / 100;
+                  commit((prev) =>
+                    prev.map((l) =>
+                      l.id === selected.id ? { ...l, starRatio: v } : l,
+                    ),
+                  );
+                }}
+              />
+              <span className="sidebar__slider-value">
+                {Math.round((selected.starRatio ?? 1) * 100)}
+              </span>
+            </div>
           </div>
         )}
 
@@ -1534,6 +1771,36 @@ function PaintSection({
             >
               DEFAULT
             </button>
+            {selected && activeTarget === "fill" && (
+              <button
+                className="paint__quick-btn"
+                onClick={() => {
+                  commit((prev) =>
+                    prev.map((l) => {
+                      if (l.id !== selected.id) return l;
+                      if (l.fillGradient) {
+                        // Flatten back to solid fill = the FROM stop.
+                        const { fillGradient: _drop, ...rest } = l;
+                        return { ...rest, fill: l.fillGradient.from };
+                      }
+                      const fromColor =
+                        l.fill && l.fill !== "none" ? l.fill : "#1b1b1b";
+                      return {
+                        ...l,
+                        fillGradient: {
+                          from: fromColor,
+                          to: "#ffffff",
+                          angle: 90,
+                        },
+                      };
+                    }),
+                  );
+                }}
+                title="Toggle linear gradient fill"
+              >
+                {selected.fillGradient ? "SOLID" : "GRAD"}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1732,34 +1999,54 @@ function LayerNode({ layer, selected }) {
     strokeLinecap: layerCap(layer),
     strokeLinejoin: layerJoin(layer),
   };
+  // Gradient fills are referenced by url(#…); the <defs> is emitted inline as
+  // a fragment sibling of the rendered shape.
+  const fill = fillPaintValue(layer);
+  const gradientDef = layer.fillGradient ? (
+    <defs key="defs">
+      <linearGradient
+        id={gradientId(layer)}
+        {...gradientLine(layer.fillGradient.angle ?? 90)}
+      >
+        <stop offset="0" stopColor={layer.fillGradient.from} />
+        <stop offset="1" stopColor={layer.fillGradient.to} />
+      </linearGradient>
+    </defs>
+  ) : null;
   if (layer.type === "rect") {
     return (
-      <rect
-        {...common}
-        x={layer.x}
-        y={layer.y}
-        width={layer.width}
-        height={layer.height}
-        fill={layer.fill}
-        stroke={layer.strokeWidth ? layer.stroke : "none"}
-        strokeWidth={layer.strokeWidth}
-        {...strokeStyle}
-      />
+      <>
+        {gradientDef}
+        <rect
+          {...common}
+          x={layer.x}
+          y={layer.y}
+          width={layer.width}
+          height={layer.height}
+          fill={fill}
+          stroke={layer.strokeWidth ? layer.stroke : "none"}
+          strokeWidth={layer.strokeWidth}
+          {...strokeStyle}
+        />
+      </>
     );
   }
   if (layer.type === "ellipse") {
     return (
-      <ellipse
-        {...common}
-        cx={cx}
-        cy={cy}
-        rx={layer.width / 2}
-        ry={layer.height / 2}
-        fill={layer.fill}
-        stroke={layer.strokeWidth ? layer.stroke : "none"}
-        strokeWidth={layer.strokeWidth}
-        {...strokeStyle}
-      />
+      <>
+        {gradientDef}
+        <ellipse
+          {...common}
+          cx={cx}
+          cy={cy}
+          rx={layer.width / 2}
+          ry={layer.height / 2}
+          fill={fill}
+          stroke={layer.strokeWidth ? layer.stroke : "none"}
+          strokeWidth={layer.strokeWidth}
+          {...strokeStyle}
+        />
+      </>
     );
   }
   if (layer.type === "line") {
@@ -1774,6 +2061,21 @@ function LayerNode({ layer, selected }) {
         strokeWidth={Math.max(2, layer.strokeWidth || 2)}
         {...strokeStyle}
       />
+    );
+  }
+  if (layer.type === "polygon") {
+    return (
+      <>
+        {gradientDef}
+        <polygon
+          {...common}
+          points={polygonPoints(layer)}
+          fill={fill}
+          stroke={layer.strokeWidth ? layer.stroke : "none"}
+          strokeWidth={layer.strokeWidth}
+          {...strokeStyle}
+        />
+      </>
     );
   }
   if (layer.type === "svg") {
@@ -1801,6 +2103,7 @@ function LayerNode({ layer, selected }) {
     const lines = String(layer.text ?? "").split("\n");
     return (
       <g {...common}>
+        {gradientDef}
         {/* Invisible hit target so empty space inside the bbox still selects. */}
         <rect
           x={layer.x}
@@ -1816,7 +2119,7 @@ function LayerNode({ layer, selected }) {
           fontSize={layer.fontSize}
           fontFamily={layer.fontFamily}
           fontWeight={layer.fontWeight}
-          fill={layer.fill}
+          fill={fill}
           stroke={layer.strokeWidth ? layer.stroke : "none"}
           strokeWidth={layer.strokeWidth || 0}
           {...strokeStyle}
