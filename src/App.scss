@@ -284,6 +284,25 @@ input {
     color: var(--ohmg-muted);
   }
 
+  &__bg-row {
+    grid-template-columns: auto 24px 1fr;
+    cursor: pointer;
+    position: relative;
+
+    input[type="color"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+    }
+  }
+
+  &__bg-swatch {
+    width: 22px;
+    height: 22px;
+    border: 1px solid var(--ohmg-black);
+  }
+
   &__segmented {
     display: grid;
     grid-template-columns: auto 1fr;

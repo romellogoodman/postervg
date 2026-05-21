@@ -11,8 +11,21 @@ const PALETTE = [
   { name: "white", value: "#ffffff" },
 ];
 
-const CANVAS_W = 1200;
-const CANVAS_H = 900;
+// Starting canvas dimensions and background; both become mutable state inside
+// App so the user can switch between presets or pick a custom size.
+const DEFAULT_CANVAS_W = 1200;
+const DEFAULT_CANVAS_H = 900;
+const DEFAULT_CANVAS_BG = "#ffffff";
+
+// Common poster / social-card sizes. `custom` is handled specially — it
+// doesn't change dimensions, just unlocks the W/H fields.
+const CANVAS_PRESETS = [
+  { id: "landscape", label: "LANDSCAPE", w: 1200, h: 900 },
+  { id: "square", label: "SQUARE", w: 1080, h: 1080 },
+  { id: "portrait", label: "PORTRAIT", w: 1080, h: 1350 },
+  { id: "poster", label: "POSTER", w: 1240, h: 1754 }, // A4 at ~150dpi
+  { id: "og", label: "BANNER", w: 1200, h: 630 },
+];
 
 const TOOLS = [
   { id: "select", label: "SELECT", key: "V" },
@@ -473,6 +486,9 @@ function App() {
   const [marquee, setMarquee] = useState(null); // { start, current, additive }
   const [editingId, setEditingId] = useState(null); // text layer currently being inline-edited
   const [dropping, setDropping] = useState(false);
+  const [canvasW, setCanvasW] = useState(DEFAULT_CANVAS_W);
+  const [canvasH, setCanvasH] = useState(DEFAULT_CANVAS_H);
+  const [canvasBg, setCanvasBg] = useState(DEFAULT_CANVAS_BG);
   // History: past/future hold snapshots of `layers`. Selection is UI state and
   // is deliberately not undoable.
   const [past, setPast] = useState([]);
@@ -598,6 +614,74 @@ function App() {
           commit((prev) => prev.filter((l) => !selectedIds.has(l.id)));
           clearSelection();
         }
+      } else if (k === "c" && mod) {
+        if (selectedIds.size) {
+          e.preventDefault();
+          // Postervg-native clipboard payload: JSON with a marker field.
+          // Pasting back into the editor re-hydrates layers with fresh ids;
+          // pasting into another app reads the prettified JSON, which is
+          // acceptable collateral for a prototype.
+          const payload = JSON.stringify({
+            _postervg: 1,
+            layers: layers.filter((l) => selectedIds.has(l.id)),
+          });
+          navigator.clipboard?.writeText(payload).catch(() => {});
+        }
+      } else if (k === "v" && mod) {
+        e.preventDefault();
+        (async () => {
+          try {
+            const text = await navigator.clipboard.readText();
+            if (!text) return;
+            // Try native payload first; fall back to raw SVG.
+            let newLayers = null;
+            try {
+              const parsed = JSON.parse(text);
+              if (parsed && parsed._postervg && Array.isArray(parsed.layers)) {
+                newLayers = parsed.layers.map((l) => ({
+                  ...l,
+                  id: nextId(),
+                  x: (l.x ?? 0) + 20,
+                  y: (l.y ?? 0) + 20,
+                }));
+              }
+            } catch {
+              // not JSON; fall through
+            }
+            if (!newLayers && text.trim().startsWith("<")) {
+              const parsed = parseSvgFile(text);
+              if (parsed) {
+                const w = Math.min(parsed.naturalW, 400);
+                const h = Math.min(parsed.naturalH, 400);
+                newLayers = [
+                  {
+                    id: nextId(),
+                    type: "svg",
+                    name: "Pasted SVG",
+                    visible: true,
+                    locked: false,
+                    x: (canvasW - w) / 2,
+                    y: (canvasH - h) / 2,
+                    width: w,
+                    height: h,
+                    rotation: 0,
+                    opacity: 1,
+                    blendMode: "normal",
+                    viewBox: parsed.viewBox,
+                    svgContent: parsed.innerHtml,
+                    rootAttrs: parsed.rootAttrs,
+                  },
+                ];
+              }
+            }
+            if (newLayers && newLayers.length) {
+              commit((prev) => [...prev, ...newLayers]);
+              selectMany(newLayers.map((l) => l.id));
+            }
+          } catch {
+            // Clipboard read may be blocked — silent no-op.
+          }
+        })();
       } else if (k === "d" && mod) {
         if (selectedIds.size) {
           e.preventDefault();
@@ -647,7 +731,18 @@ function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedIds, commit, clearSelection, selectMany, undo, redo, editingId]);
+  }, [
+    selectedIds,
+    layers,
+    commit,
+    clearSelection,
+    selectMany,
+    undo,
+    redo,
+    editingId,
+    canvasW,
+    canvasH,
+  ]);
 
   // Pointer handling on the SVG canvas
   const handleCanvasPointerDown = (e) => {
@@ -1040,8 +1135,8 @@ function App() {
     const inner = fontStyleBlock + gradientDefs;
     const defsBlock = inner ? `<defs>${inner}</defs>\n` : "";
     const out = `<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${CANVAS_W} ${CANVAS_H}" width="${CANVAS_W}" height="${CANVAS_H}">
-${defsBlock}<rect width="${CANVAS_W}" height="${CANVAS_H}" fill="#ffffff"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${canvasW} ${canvasH}" width="${canvasW}" height="${canvasH}">
+${defsBlock}<rect width="${canvasW}" height="${canvasH}" fill="${canvasBg}"/>
 ${body}
 </svg>`;
     const blob = new Blob([out], { type: "image/svg+xml" });
@@ -1636,6 +1731,67 @@ ${body}
         <div className="sidebar__spacer" />
 
         <div className="sidebar__section">
+          <div className="sidebar__label">Canvas</div>
+          <label className="sidebar__field sidebar__field--wide">
+            <span className="sidebar__field-label">SIZE</span>
+            <select
+              className="sidebar__select"
+              // Match current W×H to a preset, else surface "CUSTOM".
+              value={
+                CANVAS_PRESETS.find(
+                  (p) => p.w === canvasW && p.h === canvasH,
+                )?.id ?? "custom"
+              }
+              onChange={(e) => {
+                const preset = CANVAS_PRESETS.find((p) => p.id === e.target.value);
+                if (preset) {
+                  setCanvasW(preset.w);
+                  setCanvasH(preset.h);
+                }
+              }}
+            >
+              {CANVAS_PRESETS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label} · {p.w}×{p.h}
+                </option>
+              ))}
+              <option value="custom">CUSTOM</option>
+            </select>
+          </label>
+          <div className="sidebar__fields" style={{ marginTop: 6 }}>
+            <NumField
+              label="W"
+              value={canvasW}
+              onChange={(v) => setCanvasW(Math.max(16, Math.round(v)))}
+            />
+            <NumField
+              label="H"
+              value={canvasH}
+              onChange={(v) => setCanvasH(Math.max(16, Math.round(v)))}
+            />
+          </div>
+          <label
+            className="sidebar__slider-row sidebar__bg-row"
+            style={{ marginTop: 6 }}
+            title="Canvas background color"
+          >
+            <span className="sidebar__field-label">BG</span>
+            <span
+              className="sidebar__bg-swatch"
+              style={{ background: canvasBg }}
+            />
+            <span className="sidebar__slider-value">
+              {canvasBg.toUpperCase()}
+            </span>
+            <input
+              type="color"
+              value={canvasBg}
+              onChange={(e) => setCanvasBg(e.target.value)}
+            />
+          </label>
+        </div>
+
+        <div className="sidebar__section">
           <button className="sidebar__button" onClick={doClear}>
             CLEAR
           </button>
@@ -1657,7 +1813,7 @@ ${body}
         <svg
           ref={svgRef}
           className="canvas"
-          viewBox={`0 0 ${CANVAS_W} ${CANVAS_H}`}
+          viewBox={`0 0 ${canvasW} ${canvasH}`}
           preserveAspectRatio="xMidYMid meet"
           onPointerDown={handleCanvasPointerDown}
           onPointerMove={handleCanvasPointerMove}
@@ -1679,9 +1835,9 @@ ${body}
           <rect
             x="0"
             y="0"
-            width={CANVAS_W}
-            height={CANVAS_H}
-            fill="#ffffff"
+            width={canvasW}
+            height={canvasH}
+            fill={canvasBg}
             stroke="#1b1b1b"
             strokeWidth="1"
             vectorEffect="non-scaling-stroke"

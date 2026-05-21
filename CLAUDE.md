@@ -34,6 +34,10 @@ All UI and logic live in two files (intentional for a prototype):
 **Polygon:** one tool (`type: "polygon"`) parameterised by `sides` (3–24) and `starRatio` (0.1–1). `starRatio < 1` alternates outer/inner radii to produce stars.
 
 **Text fields beyond size/weight:** `fontFamilyId` (key into `FONT_FAMILIES`), `fontStyle` (normal|italic), `letterSpacing` (px), `lineHeight` (em). All flow through `measureTextLayer` so the bbox tracks content as any of them change. Double-click a text layer to edit its content inline via `InlineTextEditor`; Escape commits. Export embeds each used font as `@import` inside a CDATA-wrapped `<style>` block so viewers without the font installed still get the right typography.
+
+**Canvas state:** `canvasW`, `canvasH`, `canvasBg` are state on `App` (`CANVAS_PRESETS` at file top). The background `<rect>` and the exported SVG root both read from these. Use the presets dropdown or the W/H fields to change dimensions; canvas background picker sits under the same Canvas section.
+
+**Clipboard:** ⌘C serialises the selection as `{"_postervg": 1, "layers": [...]}` JSON to `navigator.clipboard`. ⌘V reads the clipboard and, if it matches that payload, rehydrates each layer with a fresh id and a +20/+20 offset. If the clipboard instead contains a raw `<svg>` string it falls back to the same path as file drop (one `svg`-type layer). Paste silently no-ops when clipboard access is blocked.
 - `src/App.scss` — all styles, BEM, tokens at the top
 
 **State inside `App`:**
