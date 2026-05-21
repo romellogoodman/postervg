@@ -9,6 +9,7 @@ everything in a layer stack, and export the result as a single SVG.
 
 - **Drop SVGs**: drag any `.svg` file onto the canvas to place it as a layer
 - **Shape Tools**: rectangle, ellipse, line — click-drag to draw
+- **Text Tool**: click to place; edit content, size, alignment, and weight in the sidebar. Resize handles scale the font-size uniformly.
 - **Select & Transform**: move, resize, rotate (hold Shift to snap rotation)
 - **Fill / Stroke**: paired fill and stroke swatches with swap, none, and a custom color picker
 - **Layers Panel**: reorder, hide, lock, rename, delete
@@ -29,6 +30,7 @@ npm run dev
 | `R` | rectangle |
 | `O` | ellipse |
 | `L` | line |
+| `T` | text |
 | `⌫` / `Del` | delete selected |
 | `⌘D` / `Ctrl+D` | duplicate selected |
 | `Esc` | deselect |

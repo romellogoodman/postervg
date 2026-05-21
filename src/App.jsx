@@ -19,10 +19,102 @@ const TOOLS = [
   { id: "rect", label: "RECT", key: "R" },
   { id: "ellipse", label: "ELLIPSE", key: "O" },
   { id: "line", label: "LINE", key: "L" },
+  { id: "text", label: "TEXT", key: "T" },
 ];
+
+const TEXT_FONT_FAMILY = "Inter, system-ui, sans-serif";
+const TEXT_LINE_HEIGHT = 1.2;
 
 let _uid = 0;
 const nextId = () => `l${Date.now().toString(36)}${(_uid++).toString(36)}`;
+
+// Measure rendered text via a hidden off-DOM SVG so the layer bbox can track
+// content as text/size/weight change. Returns natural content dimensions.
+let _measureSvg = null;
+let _measureTextEl = null;
+function measureText(text, fontSize, fontFamily, fontWeight) {
+  if (typeof document === "undefined") {
+    return { width: fontSize * 2, height: fontSize };
+  }
+  if (!_measureSvg) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("width", "0");
+    svg.setAttribute("height", "0");
+    svg.style.position = "absolute";
+    svg.style.left = "-9999px";
+    svg.style.top = "-9999px";
+    svg.style.visibility = "hidden";
+    svg.style.pointerEvents = "none";
+    const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    t.setAttribute("dominant-baseline", "hanging");
+    svg.appendChild(t);
+    document.body.appendChild(svg);
+    _measureSvg = svg;
+    _measureTextEl = t;
+  }
+  const el = _measureTextEl;
+  el.setAttribute("font-size", String(fontSize));
+  el.setAttribute("font-family", fontFamily);
+  el.setAttribute("font-weight", String(fontWeight));
+  while (el.firstChild) el.removeChild(el.firstChild);
+  const lines = String(text ?? "").split("\n");
+  lines.forEach((line, i) => {
+    const tspan = document.createElementNS(
+      "http://www.w3.org/2000/svg",
+      "tspan",
+    );
+    tspan.setAttribute("x", "0");
+    if (i > 0) tspan.setAttribute("dy", `${TEXT_LINE_HEIGHT}em`);
+    // Empty lines still need a glyph to contribute height; zero-width space keeps
+    // the line visually empty but measurable.
+    tspan.textContent = line.length ? line : "​";
+    el.appendChild(tspan);
+  });
+  const bbox = el.getBBox();
+  return {
+    width: Math.max(1, bbox.width),
+    height: Math.max(1, bbox.height),
+  };
+}
+
+function textAnchorX(layer) {
+  if (layer.textAlign === "middle") return layer.x + layer.width / 2;
+  if (layer.textAlign === "end") return layer.x + layer.width;
+  return layer.x;
+}
+
+function defaultTextLayer(x, y, paint) {
+  const text = "Text";
+  const fontSize = 48;
+  const fontWeight = "normal";
+  const { width, height } = measureText(
+    text,
+    fontSize,
+    TEXT_FONT_FAMILY,
+    fontWeight,
+  );
+  return {
+    id: nextId(),
+    type: "text",
+    name: "Text",
+    visible: true,
+    locked: false,
+    x,
+    y,
+    width,
+    height,
+    rotation: 0,
+    // Text with no fill is usually a mistake; fall back to black ink.
+    fill: paint.fill === "none" ? "#1b1b1b" : paint.fill,
+    stroke: paint.stroke,
+    strokeWidth: paint.stroke === "none" ? 0 : paint.strokeWidth,
+    text,
+    fontSize,
+    fontFamily: TEXT_FONT_FAMILY,
+    fontWeight,
+    textAlign: "start",
+  };
+}
 
 function parseSvgFile(text) {
   const doc = new DOMParser().parseFromString(text, "image/svg+xml");
@@ -144,6 +236,25 @@ function serializeLayerToSvg(l) {
     const extra = l.rootAttrs ? " " + serializeAttrs(l.rootAttrs) : "";
     return `<g${rot}><svg x="${l.x}" y="${l.y}" width="${l.width}" height="${l.height}" viewBox="${l.viewBox}" preserveAspectRatio="xMidYMid meet"${extra}>${l.svgContent}</svg></g>`;
   }
+  if (l.type === "text") {
+    const escape = (s) =>
+      String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    const tx = textAnchorX(l);
+    const lines = String(l.text ?? "").split("\n");
+    const tspans = lines
+      .map(
+        (line, i) =>
+          `<tspan x="${tx}"${i > 0 ? ` dy="${TEXT_LINE_HEIGHT}em"` : ""}>${escape(line.length ? line : " ")}</tspan>`,
+      )
+      .join("");
+    const strokePart = l.strokeWidth
+      ? ` stroke="${l.stroke}" stroke-width="${l.strokeWidth}"`
+      : "";
+    return `<text x="${tx}" y="${l.y}" font-size="${l.fontSize}" font-family="${escape(l.fontFamily)}" font-weight="${l.fontWeight}" text-anchor="${l.textAlign}" dominant-baseline="hanging" fill="${l.fill}"${strokePart}${rot}>${tspans}</text>`;
+  }
   return "";
 }
 
@@ -182,12 +293,17 @@ function App() {
   // Keyboard shortcuts
   useEffect(() => {
     const onKey = (e) => {
-      if (e.target instanceof HTMLInputElement) return;
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      )
+        return;
       const k = e.key.toLowerCase();
       if (k === "v") setTool("select");
       else if (k === "r") setTool("rect");
       else if (k === "o") setTool("ellipse");
       else if (k === "l") setTool("line");
+      else if (k === "t") setTool("text");
       else if (k === "escape") setSelectedId(null);
       else if (k === "backspace" || k === "delete") {
         if (selectedId) {
@@ -240,6 +356,18 @@ function App() {
       return;
     }
 
+    // Text is click-to-place, not drag-to-size: drop a default text layer at
+    // the cursor, select it, and fall back to the select tool so the user
+    // edits via the sidebar rather than drawing another.
+    if (tool === "text") {
+      const paint = { fill: fillColor, stroke: strokeColor, strokeWidth };
+      const layer = defaultTextLayer(pt.x, pt.y, paint);
+      setLayers((prev) => [...prev, layer]);
+      setSelectedId(layer.id);
+      setTool("select");
+      return;
+    }
+
     // Drawing tool
     setSelectedId(null);
     setDrawing({ type: tool, start: pt, current: pt });
@@ -281,6 +409,36 @@ function App() {
           nh = Math.max(2, sl.y + sl.height - ly);
           ny = sl.y + sl.height - nh;
         }
+        // For text layers, resize handles scale font-size uniformly instead of
+        // stretching the bbox independently. We derive the scale from whichever
+        // axis the active handle drives, then re-measure to snap the bbox to
+        // the new content extent.
+        let nextFontSize = null;
+        if (sl.type === "text") {
+          const affectsX = h.includes("e") || h.includes("w");
+          const affectsY = h.includes("n") || h.includes("s");
+          let scale = 1;
+          if (affectsX && affectsY) {
+            scale = Math.max(nw / sl.width, nh / sl.height);
+          } else if (affectsX) {
+            scale = nw / sl.width;
+          } else if (affectsY) {
+            scale = nh / sl.height;
+          }
+          nextFontSize = Math.max(4, sl.fontSize * scale);
+          const m = measureText(
+            sl.text,
+            nextFontSize,
+            sl.fontFamily,
+            sl.fontWeight,
+          );
+          nw = m.width;
+          nh = m.height;
+          // Anchor to the opposite edge from the handle so the grabbed corner
+          // tracks the pointer.
+          nx = h.includes("w") ? sl.x + sl.width - nw : sl.x;
+          ny = h.includes("n") ? sl.y + sl.height - nh : sl.y;
+        }
         // Keep center stable under rotation when top-left changes.
         // Recompute the original center and new center; shift so rotated center stays put.
         if (sl.rotation) {
@@ -298,11 +456,12 @@ function App() {
           ny += sdy - ddy;
         }
         setLayers((prev) =>
-          prev.map((l) =>
-            l.id === drag.layerId
-              ? { ...l, x: nx, y: ny, width: nw, height: nh }
-              : l,
-          ),
+          prev.map((l) => {
+            if (l.id !== drag.layerId) return l;
+            const next = { ...l, x: nx, y: ny, width: nw, height: nh };
+            if (nextFontSize != null) next.fontSize = nextFontSize;
+            return next;
+          }),
         );
       } else if (drag.mode === "rotate") {
         const sl = drag.startLayer;
@@ -644,6 +803,111 @@ ${body}
                   )
                 }
               />
+            </div>
+          </div>
+        )}
+
+        {selected && selected.type === "text" && (
+          <div className="sidebar__section">
+            <div className="sidebar__label">Text</div>
+            <textarea
+              className="sidebar__textarea"
+              value={selected.text}
+              rows={3}
+              onChange={(e) => {
+                const text = e.target.value;
+                const m = measureText(
+                  text,
+                  selected.fontSize,
+                  selected.fontFamily,
+                  selected.fontWeight,
+                );
+                setLayers((prev) =>
+                  prev.map((l) =>
+                    l.id === selected.id
+                      ? { ...l, text, width: m.width, height: m.height }
+                      : l,
+                  ),
+                );
+              }}
+            />
+            <div className="sidebar__fields" style={{ marginTop: 8 }}>
+              <NumField
+                label="Size"
+                value={Math.round(selected.fontSize)}
+                onChange={(v) => {
+                  const fontSize = Math.max(4, v);
+                  const m = measureText(
+                    selected.text,
+                    fontSize,
+                    selected.fontFamily,
+                    selected.fontWeight,
+                  );
+                  setLayers((prev) =>
+                    prev.map((l) =>
+                      l.id === selected.id
+                        ? {
+                            ...l,
+                            fontSize,
+                            width: m.width,
+                            height: m.height,
+                          }
+                        : l,
+                    ),
+                  );
+                }}
+              />
+            </div>
+            <div className="sidebar__align-group" style={{ marginTop: 8 }}>
+              {[
+                { id: "start", label: "L", title: "Align left" },
+                { id: "middle", label: "C", title: "Align center" },
+                { id: "end", label: "R", title: "Align right" },
+              ].map((a) => (
+                <button
+                  key={a.id}
+                  className={`sidebar__align-btn${selected.textAlign === a.id ? " sidebar__align-btn--active" : ""}`}
+                  onClick={() =>
+                    setLayers((prev) =>
+                      prev.map((l) =>
+                        l.id === selected.id
+                          ? { ...l, textAlign: a.id }
+                          : l,
+                      ),
+                    )
+                  }
+                  title={a.title}
+                >
+                  {a.label}
+                </button>
+              ))}
+              <button
+                className={`sidebar__align-btn sidebar__align-btn--bold${selected.fontWeight === "bold" ? " sidebar__align-btn--active" : ""}`}
+                onClick={() =>
+                  setLayers((prev) =>
+                    prev.map((l) => {
+                      if (l.id !== selected.id) return l;
+                      const fontWeight =
+                        l.fontWeight === "bold" ? "normal" : "bold";
+                      const m = measureText(
+                        l.text,
+                        l.fontSize,
+                        l.fontFamily,
+                        fontWeight,
+                      );
+                      return {
+                        ...l,
+                        fontWeight,
+                        width: m.width,
+                        height: m.height,
+                      };
+                    }),
+                  )
+                }
+                title="Toggle bold"
+              >
+                B
+              </button>
             </div>
           </div>
         )}
@@ -1134,6 +1398,47 @@ function LayerNode({ layer, selected }) {
           pointerEvents="none"
           dangerouslySetInnerHTML={{ __html: inner }}
         />
+      </g>
+    );
+  }
+  if (layer.type === "text") {
+    const tx = textAnchorX(layer);
+    const lines = String(layer.text ?? "").split("\n");
+    return (
+      <g {...common}>
+        {/* Invisible hit target so empty space inside the bbox still selects. */}
+        <rect
+          x={layer.x}
+          y={layer.y}
+          width={layer.width}
+          height={layer.height}
+          fill="transparent"
+          pointerEvents="all"
+        />
+        <text
+          x={tx}
+          y={layer.y}
+          fontSize={layer.fontSize}
+          fontFamily={layer.fontFamily}
+          fontWeight={layer.fontWeight}
+          fill={layer.fill}
+          stroke={layer.strokeWidth ? layer.stroke : "none"}
+          strokeWidth={layer.strokeWidth || 0}
+          textAnchor={layer.textAlign}
+          dominantBaseline="hanging"
+          pointerEvents="none"
+          style={{ userSelect: "none" }}
+        >
+          {lines.map((line, i) => (
+            <tspan
+              key={i}
+              x={tx}
+              dy={i === 0 ? 0 : `${TEXT_LINE_HEIGHT}em`}
+            >
+              {line.length ? line : "​"}
+            </tspan>
+          ))}
+        </text>
       </g>
     );
   }
