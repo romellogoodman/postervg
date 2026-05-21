@@ -15,21 +15,25 @@ React 19 + Vite + SCSS. No canvas library — everything is SVG DOM.
 All UI and logic live in two files (intentional for a prototype):
 
 - `src/App.jsx` — the entire editor, organized by helper + component
-  - `gradientLine` / `serializeGradientDef` / `fillPaintValue` — linear-gradient math + fill helper (`src/App.jsx:54`, `:66`, `:76`)
-  - `polygonPoints` — regular polygon + star inscribed in a bbox (`:79`)
-  - `measureText` / `textAnchorX` / `defaultTextLayer` — text measurement + factory (`:118`, `:163`, `:169`)
-  - `parseSvgFile` / `serializeAttrs` — SVG import (`:207`, `:248`)
-  - `defaultLayerForShape` / `serializeLayerToSvg` — layer model (`:273`, `:317`)
-  - `App` — state, pointer handlers, drop, keyboard, layout (`:379`)
-  - `PaintSection` / `StrokeStyleRow` / `PaintBox` — fill + stroke controls, incl. dash/cap/join (`:1615`, `:1877`, `:1933`)
-  - `LayerNode` — per-layer SVG rendering, emits gradient `<defs>` inline (`:1978`)
-  - `SelectionOverlay` / `MultiSelectionOutline` — single-layer handles + multi-select outline (`:2147`, `:2224`)
+  - `FONT_FAMILIES` / `fontPresetForLayer` — curated web-font stacks + Google-Fonts URLs (`src/App.jsx:31`, `:73`)
+  - `gradientLine` / `serializeGradientDef` / `fillPaintValue` — linear-gradient math + fill helper (`:103`, `:115`, `:125`)
+  - `polygonPoints` — regular polygon + star inscribed in a bbox (`:128`)
+  - `measureText` / `measureTextLayer` / `textAnchorX` / `defaultTextLayer` — text measurement + factory (`:167`, `:225`, `:236`, `:242`)
+  - `parseSvgFile` / `serializeAttrs` — SVG import (`:283`, `:324`)
+  - `defaultLayerForShape` / `serializeLayerToSvg` — layer model (`:349`, `:393`)
+  - `App` — state, pointer handlers, drop, keyboard, layout (`:463`)
+  - `PaintSection` / `StrokeStyleRow` / `PaintBox` — fill + stroke controls, incl. dash/cap/join (`:1852`, `:2114`, `:2170`)
+  - `InlineTextEditor` — contentEditable div inside `<foreignObject>` for double-click text editing (`:2202`)
+  - `LayerNode` — per-layer SVG rendering, emits gradient `<defs>` inline (`:2285`)
+  - `SelectionOverlay` / `MultiSelectionOutline` — single-layer handles + multi-select outline (`:2456`, `:2533`)
 
 **Layer style attributes:** `opacity` (0..1), `blendMode` (one of `BLEND_OPTIONS`), `strokeDash` (key of `DASH_PRESETS`), `strokeCap`, `strokeJoin`. Render and export go through `layerOpacity` / `layerBlend` / `layerDashArray` / `layerCap` / `layerJoin` so legacy layers without the fields still draw.
 
 **Fill paint:** a layer's fill is either its `fill` string (a color or `"none"`) or — when `fillGradient: { from, to, angle }` is set — a `url(#gr-<layerId>)` reference to a `<linearGradient>` defined via `serializeGradientDef` (export) or an inline `<defs>` sibling in `LayerNode` (canvas). Use `fillPaintValue(layer)` at every fill site.
 
 **Polygon:** one tool (`type: "polygon"`) parameterised by `sides` (3–24) and `starRatio` (0.1–1). `starRatio < 1` alternates outer/inner radii to produce stars.
+
+**Text fields beyond size/weight:** `fontFamilyId` (key into `FONT_FAMILIES`), `fontStyle` (normal|italic), `letterSpacing` (px), `lineHeight` (em). All flow through `measureTextLayer` so the bbox tracks content as any of them change. Double-click a text layer to edit its content inline via `InlineTextEditor`; Escape commits. Export embeds each used font as `@import` inside a CDATA-wrapped `<style>` block so viewers without the font installed still get the right typography.
 - `src/App.scss` — all styles, BEM, tokens at the top
 
 **State inside `App`:**

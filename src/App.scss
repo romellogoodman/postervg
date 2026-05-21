@@ -446,6 +446,10 @@ input {
 
     &--bold {
       margin-left: auto;
+      font-weight: 800;
+    }
+
+    &--italic {
       font-style: italic;
     }
   }

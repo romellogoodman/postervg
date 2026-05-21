@@ -10,7 +10,7 @@ everything in a layer stack, and export the result as a single SVG.
 - **Drop SVGs**: drag any `.svg` file onto the canvas to place it as a layer
 - **Shape Tools**: rectangle, ellipse, line, polygon/star — click-drag to draw. Polygons take a sides count (3–24) and a star ratio slider.
 - **Gradient Fill**: toggle any solid fill into a linear gradient, pick from/to colors, rotate the angle (0–359°).
-- **Text Tool**: click to place; edit content, size, alignment, and weight in the sidebar. Resize handles scale the font-size uniformly.
+- **Text Tool**: click to place; double-click to edit inline. Sidebar controls cover font family (Inter / Serif / Mono / Grotesk), size, letter-spacing, line-height, weight, italic, and alignment. Exported SVG embeds used Google Fonts so viewers see the intended typography. Resize handles scale the font-size uniformly.
 - **Undo / Redo**: `⌘Z` / `⌘⇧Z` on every discrete mutation; drags collapse into a single history entry.
 - **Select & Transform**: click, shift-click, or drag a marquee on empty canvas to select one or many layers; move, resize, rotate (hold Shift to snap rotation). Multi-select shows a dashed union outline and moves together; resize/rotate handles appear only for a single selection.
 - **Nudge**: arrow keys move the selection 1px; Shift+arrow moves 10px.

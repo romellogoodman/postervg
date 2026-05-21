@@ -26,6 +26,55 @@ const TOOLS = [
 const TEXT_FONT_FAMILY = "Inter, system-ui, sans-serif";
 const TEXT_LINE_HEIGHT = 1.2;
 
+// Curated set of web fonts. Each entry pairs a display label with a rendering
+// stack and an optional Google Fonts CSS URL used to embed the font into
+// exported SVGs so viewers without the font installed still see the intended
+// typography. `inter` has no Google URL because the editor itself already
+// loads Inter via index.html.
+const FONT_FAMILIES = [
+  {
+    id: "inter",
+    label: "INTER",
+    stack: "Inter, system-ui, sans-serif",
+    google: null,
+  },
+  {
+    id: "playfair",
+    label: "SERIF",
+    stack: '"Playfair Display", Georgia, serif',
+    google:
+      "https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&display=swap",
+  },
+  {
+    id: "jetbrains",
+    label: "MONO",
+    stack: '"JetBrains Mono", "Courier New", monospace',
+    google:
+      "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap",
+  },
+  {
+    id: "space-grotesk",
+    label: "GROTESK",
+    stack: '"Space Grotesk", Inter, sans-serif',
+    google:
+      "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;700&display=swap",
+  },
+];
+
+const FONT_FAMILY_BY_ID = Object.fromEntries(
+  FONT_FAMILIES.map((f) => [f.id, f]),
+);
+const FONT_FAMILY_BY_STACK = Object.fromEntries(
+  FONT_FAMILIES.map((f) => [f.stack, f]),
+);
+
+// Look up the preset that owns a given rendering stack (or null if the user
+// somehow has a layer with a custom stack).
+function fontPresetForLayer(layer) {
+  if (layer.fontFamilyId) return FONT_FAMILY_BY_ID[layer.fontFamilyId] || null;
+  return FONT_FAMILY_BY_STACK[layer.fontFamily] || null;
+}
+
 // Curated subset of CSS blend modes — the ones users reach for on posters.
 const BLEND_OPTIONS = [
   "normal",
@@ -115,7 +164,15 @@ const nextId = () => `l${Date.now().toString(36)}${(_uid++).toString(36)}`;
 // content as text/size/weight change. Returns natural content dimensions.
 let _measureSvg = null;
 let _measureTextEl = null;
-function measureText(text, fontSize, fontFamily, fontWeight) {
+function measureText(text, opts = {}) {
+  const {
+    fontSize = 48,
+    fontFamily = TEXT_FONT_FAMILY,
+    fontWeight = "normal",
+    fontStyle = "normal",
+    letterSpacing = 0,
+    lineHeight = TEXT_LINE_HEIGHT,
+  } = opts;
   if (typeof document === "undefined") {
     return { width: fontSize * 2, height: fontSize };
   }
@@ -139,6 +196,8 @@ function measureText(text, fontSize, fontFamily, fontWeight) {
   el.setAttribute("font-size", String(fontSize));
   el.setAttribute("font-family", fontFamily);
   el.setAttribute("font-weight", String(fontWeight));
+  el.setAttribute("font-style", String(fontStyle));
+  el.setAttribute("letter-spacing", String(letterSpacing));
   while (el.firstChild) el.removeChild(el.firstChild);
   const lines = String(text ?? "").split("\n");
   lines.forEach((line, i) => {
@@ -147,7 +206,7 @@ function measureText(text, fontSize, fontFamily, fontWeight) {
       "tspan",
     );
     tspan.setAttribute("x", "0");
-    if (i > 0) tspan.setAttribute("dy", `${TEXT_LINE_HEIGHT}em`);
+    if (i > 0) tspan.setAttribute("dy", `${lineHeight}em`);
     // Empty lines still need a glyph to contribute height; zero-width space keeps
     // the line visually empty but measurable.
     tspan.textContent = line.length ? line : "​";
@@ -160,6 +219,20 @@ function measureText(text, fontSize, fontFamily, fontWeight) {
   };
 }
 
+// Read typography opts off a text layer, optionally overriding specific
+// fields. Handy when a handler is computing a new value and wants the bbox
+// after the edit applies.
+function measureTextLayer(layer, overrides = {}) {
+  return measureText(overrides.text ?? layer.text, {
+    fontSize: overrides.fontSize ?? layer.fontSize,
+    fontFamily: overrides.fontFamily ?? layer.fontFamily,
+    fontWeight: overrides.fontWeight ?? layer.fontWeight,
+    fontStyle: overrides.fontStyle ?? layer.fontStyle ?? "normal",
+    letterSpacing: overrides.letterSpacing ?? layer.letterSpacing ?? 0,
+    lineHeight: overrides.lineHeight ?? layer.lineHeight ?? TEXT_LINE_HEIGHT,
+  });
+}
+
 function textAnchorX(layer) {
   if (layer.textAlign === "middle") return layer.x + layer.width / 2;
   if (layer.textAlign === "end") return layer.x + layer.width;
@@ -170,12 +243,11 @@ function defaultTextLayer(x, y, paint) {
   const text = "Text";
   const fontSize = 48;
   const fontWeight = "normal";
-  const { width, height } = measureText(
-    text,
+  const { width, height } = measureText(text, {
     fontSize,
-    TEXT_FONT_FAMILY,
+    fontFamily: TEXT_FONT_FAMILY,
     fontWeight,
-  );
+  });
   return {
     id: nextId(),
     type: "text",
@@ -194,7 +266,11 @@ function defaultTextLayer(x, y, paint) {
     text,
     fontSize,
     fontFamily: TEXT_FONT_FAMILY,
+    fontFamilyId: "inter",
     fontWeight,
+    fontStyle: "normal",
+    letterSpacing: 0,
+    lineHeight: TEXT_LINE_HEIGHT,
     textAlign: "start",
     opacity: 1,
     blendMode: "normal",
@@ -359,19 +435,27 @@ function serializeLayerToSvg(l) {
       String(s)
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;");
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
     const tx = textAnchorX(l);
     const lines = String(l.text ?? "").split("\n");
+    const lineHeight = l.lineHeight ?? TEXT_LINE_HEIGHT;
     const tspans = lines
       .map(
         (line, i) =>
-          `<tspan x="${tx}"${i > 0 ? ` dy="${TEXT_LINE_HEIGHT}em"` : ""}>${escape(line.length ? line : " ")}</tspan>`,
+          `<tspan x="${tx}"${i > 0 ? ` dy="${lineHeight}em"` : ""}>${escape(line.length ? line : " ")}</tspan>`,
       )
       .join("");
     const strokePart = l.strokeWidth
       ? ` stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${strokeExtras}`
       : "";
-    return `<text x="${tx}" y="${l.y}" font-size="${l.fontSize}" font-family="${escape(l.fontFamily)}" font-weight="${l.fontWeight}" text-anchor="${l.textAlign}" dominant-baseline="hanging" fill="${fillAttr}"${strokePart}${opacityPart}${stylePart}${rot}>${tspans}</text>`;
+    const styleParts = [];
+    if ((l.fontStyle ?? "normal") !== "normal")
+      styleParts.push(` font-style="${l.fontStyle}"`);
+    if ((l.letterSpacing ?? 0) !== 0)
+      styleParts.push(` letter-spacing="${l.letterSpacing}"`);
+    const extras = styleParts.join("");
+    return `<text x="${tx}" y="${l.y}" font-size="${l.fontSize}" font-family="${escape(l.fontFamily)}" font-weight="${l.fontWeight}"${extras} text-anchor="${l.textAlign}" dominant-baseline="hanging" fill="${fillAttr}"${strokePart}${opacityPart}${stylePart}${rot}>${tspans}</text>`;
   }
   return "";
 }
@@ -387,6 +471,7 @@ function App() {
   const [drawing, setDrawing] = useState(null); // { type, start, current }
   const [drag, setDrag] = useState(null); // { mode, layerId, layerIds?, startPointer, startLayer, startLayers?, handle? }
   const [marquee, setMarquee] = useState(null); // { start, current, additive }
+  const [editingId, setEditingId] = useState(null); // text layer currently being inline-edited
   const [dropping, setDropping] = useState(false);
   // History: past/future hold snapshots of `layers`. Selection is UI state and
   // is deliberately not undoable.
@@ -481,9 +566,13 @@ function App() {
     const onKey = (e) => {
       if (
         e.target instanceof HTMLInputElement ||
-        e.target instanceof HTMLTextAreaElement
+        e.target instanceof HTMLTextAreaElement ||
+        (e.target instanceof HTMLElement && e.target.isContentEditable)
       )
         return;
+      // While inline-editing a text layer the editor swallows its own keys;
+      // skip global shortcuts so typing `r` doesn't switch to the rect tool.
+      if (editingId) return;
       const k = e.key.toLowerCase();
       const mod = e.metaKey || e.ctrlKey;
       // Undo / redo first so tool-letter fallbacks don't swallow ⌘Z etc.
@@ -558,7 +647,7 @@ function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedIds, commit, clearSelection, selectMany, undo, redo]);
+  }, [selectedIds, commit, clearSelection, selectMany, undo, redo, editingId]);
 
   // Pointer handling on the SVG canvas
   const handleCanvasPointerDown = (e) => {
@@ -683,12 +772,7 @@ function App() {
             scale = nh / sl.height;
           }
           nextFontSize = Math.max(4, sl.fontSize * scale);
-          const m = measureText(
-            sl.text,
-            nextFontSize,
-            sl.fontFamily,
-            sl.fontWeight,
-          );
+          const m = measureTextLayer(sl, { fontSize: nextFontSize });
           nw = m.width;
           nh = m.height;
           // Anchor to the opposite edge from the handle so the grabbed corner
@@ -927,13 +1011,34 @@ function App() {
 
   const doExport = () => {
     const body = layers.map(serializeLayerToSvg).join("\n");
-    // Hoist gradient definitions into a single top-level <defs> so each
-    // shape references its gradient by id.
-    const defs = layers
+    // Collect distinct Google Font URLs used by any visible text layer and
+    // embed them as @import in a <style> block — this lets downstream SVG
+    // viewers render with the intended typography even without the font
+    // installed locally. (Viewers that strip <style> will fall back to the
+    // next font in the stack.)
+    const fontUrls = Array.from(
+      new Set(
+        layers
+          .filter((l) => l.visible && l.type === "text")
+          .map((l) => fontPresetForLayer(l)?.google)
+          .filter(Boolean),
+      ),
+    );
+    const fontImports = fontUrls
+      .map((u) => `@import url('${u}');`)
+      .join("");
+    // CSS lives inside <style> as text; the Google Fonts URL contains `&`
+    // which XML parsers would otherwise read as an entity reference. CDATA
+    // keeps the URL intact.
+    const fontStyleBlock = fontImports
+      ? `<style><![CDATA[${fontImports}]]></style>`
+      : "";
+    const gradientDefs = layers
       .map(serializeGradientDef)
       .filter(Boolean)
       .join("");
-    const defsBlock = defs ? `<defs>${defs}</defs>\n` : "";
+    const inner = fontStyleBlock + gradientDefs;
+    const defsBlock = inner ? `<defs>${inner}</defs>\n` : "";
     const out = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${CANVAS_W} ${CANVAS_H}" width="${CANVAS_W}" height="${CANVAS_H}">
 ${defsBlock}<rect width="${CANVAS_W}" height="${CANVAS_H}" fill="#ffffff"/>
@@ -1341,12 +1446,7 @@ ${body}
               rows={3}
               onChange={(e) => {
                 const text = e.target.value;
-                const m = measureText(
-                  text,
-                  selected.fontSize,
-                  selected.fontFamily,
-                  selected.fontWeight,
-                );
+                const m = measureTextLayer(selected, { text });
                 commit((prev) =>
                   prev.map((l) =>
                     l.id === selected.id
@@ -1356,18 +1456,46 @@ ${body}
                 );
               }}
             />
-            <div className="sidebar__fields" style={{ marginTop: 8 }}>
+            <label className="sidebar__field sidebar__field--wide" style={{ marginTop: 8 }}>
+              <span className="sidebar__field-label">FONT</span>
+              <select
+                className="sidebar__select"
+                value={selected.fontFamilyId ?? "inter"}
+                onChange={(e) => {
+                  const preset = FONT_FAMILY_BY_ID[e.target.value];
+                  if (!preset) return;
+                  const m = measureTextLayer(selected, {
+                    fontFamily: preset.stack,
+                  });
+                  commit((prev) =>
+                    prev.map((l) =>
+                      l.id === selected.id
+                        ? {
+                            ...l,
+                            fontFamilyId: preset.id,
+                            fontFamily: preset.stack,
+                            width: m.width,
+                            height: m.height,
+                          }
+                        : l,
+                    ),
+                  );
+                }}
+              >
+                {FONT_FAMILIES.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="sidebar__fields" style={{ marginTop: 6 }}>
               <NumField
                 label="Size"
                 value={Math.round(selected.fontSize)}
                 onChange={(v) => {
                   const fontSize = Math.max(4, v);
-                  const m = measureText(
-                    selected.text,
-                    fontSize,
-                    selected.fontFamily,
-                    selected.fontWeight,
-                  );
+                  const m = measureTextLayer(selected, { fontSize });
                   commit((prev) =>
                     prev.map((l) =>
                       l.id === selected.id
@@ -1382,6 +1510,55 @@ ${body}
                   );
                 }}
               />
+              <NumField
+                label="Track"
+                value={Math.round(selected.letterSpacing ?? 0)}
+                onChange={(v) => {
+                  const letterSpacing = v;
+                  const m = measureTextLayer(selected, { letterSpacing });
+                  commit((prev) =>
+                    prev.map((l) =>
+                      l.id === selected.id
+                        ? {
+                            ...l,
+                            letterSpacing,
+                            width: m.width,
+                            height: m.height,
+                          }
+                        : l,
+                    ),
+                  );
+                }}
+              />
+            </div>
+            <div className="sidebar__slider-row">
+              <span className="sidebar__field-label">Lead</span>
+              <input
+                className="sidebar__slider"
+                type="range"
+                min="80"
+                max="200"
+                value={Math.round((selected.lineHeight ?? TEXT_LINE_HEIGHT) * 100)}
+                onChange={(e) => {
+                  const lineHeight = Number(e.target.value) / 100;
+                  const m = measureTextLayer(selected, { lineHeight });
+                  commit((prev) =>
+                    prev.map((l) =>
+                      l.id === selected.id
+                        ? {
+                            ...l,
+                            lineHeight,
+                            width: m.width,
+                            height: m.height,
+                          }
+                        : l,
+                    ),
+                  );
+                }}
+              />
+              <span className="sidebar__slider-value">
+                {Math.round((selected.lineHeight ?? TEXT_LINE_HEIGHT) * 100)}
+              </span>
             </div>
             <div className="sidebar__align-group" style={{ marginTop: 8 }}>
               {[
@@ -1414,12 +1591,7 @@ ${body}
                       if (l.id !== selected.id) return l;
                       const fontWeight =
                         l.fontWeight === "bold" ? "normal" : "bold";
-                      const m = measureText(
-                        l.text,
-                        l.fontSize,
-                        l.fontFamily,
-                        fontWeight,
-                      );
+                      const m = measureTextLayer(l, { fontWeight });
                       return {
                         ...l,
                         fontWeight,
@@ -1432,6 +1604,30 @@ ${body}
                 title="Toggle bold"
               >
                 B
+              </button>
+              <button
+                className={`sidebar__align-btn sidebar__align-btn--italic${(selected.fontStyle ?? "normal") === "italic" ? " sidebar__align-btn--active" : ""}`}
+                onClick={() =>
+                  commit((prev) =>
+                    prev.map((l) => {
+                      if (l.id !== selected.id) return l;
+                      const fontStyle =
+                        (l.fontStyle ?? "normal") === "italic"
+                          ? "normal"
+                          : "italic";
+                      const m = measureTextLayer(l, { fontStyle });
+                      return {
+                        ...l,
+                        fontStyle,
+                        width: m.width,
+                        height: m.height,
+                      };
+                    }),
+                  )
+                }
+                title="Toggle italic"
+              >
+                I
               </button>
             </div>
           </div>
@@ -1466,6 +1662,15 @@ ${body}
           onPointerDown={handleCanvasPointerDown}
           onPointerMove={handleCanvasPointerMove}
           onPointerUp={handleCanvasPointerUp}
+          onDoubleClick={(e) => {
+            const hit = e.target.closest("[data-layer-id]")?.dataset?.layerId;
+            if (!hit) return;
+            const l = layers.find((x) => x.id === hit);
+            if (l && l.type === "text" && !l.locked) {
+              setEditingId(hit);
+              selectOnly(hit);
+            }
+          }}
           style={{
             cursor:
               tool === "select" ? "default" : drawing ? "crosshair" : "crosshair",
@@ -1481,9 +1686,41 @@ ${body}
             strokeWidth="1"
             vectorEffect="non-scaling-stroke"
           />
-          {layers.map((l) => (
-            <LayerNode key={l.id} layer={l} selected={selectedIds.has(l.id)} />
-          ))}
+          {layers.map((l) =>
+            // While inline-editing a text layer we render the editor in place
+            // of the glyphs so the user doesn't see both at once.
+            l.id === editingId ? null : (
+              <LayerNode key={l.id} layer={l} selected={selectedIds.has(l.id)} />
+            ),
+          )}
+          {editingId &&
+            (() => {
+              const l = layers.find((x) => x.id === editingId);
+              if (!l || l.type !== "text") return null;
+              const { cx, cy } = bboxCenter(l);
+              return (
+                <foreignObject
+                  x={l.x}
+                  y={l.y}
+                  // Give the editor some slack so the caret + growing text
+                  // aren't clipped by the layer's current bbox.
+                  width={Math.max(l.width + 200, 200)}
+                  height={Math.max(l.height + 80, 80)}
+                  transform={
+                    l.rotation
+                      ? `rotate(${l.rotation} ${cx} ${cy})`
+                      : undefined
+                  }
+                  style={{ overflow: "visible" }}
+                >
+                  <InlineTextEditor
+                    layer={l}
+                    commit={commit}
+                    onExit={() => setEditingId(null)}
+                  />
+                </foreignObject>
+              );
+            })()}
           {preview}
           {/* Single-layer selection shows full handles; multi-select shows a
               union outline only (group transform handles come in a later
@@ -1958,6 +2195,76 @@ function PaintBox({ color, kind, active, onClick, className }) {
   );
 }
 
+// contentEditable div inside a <foreignObject> so the inline editor inherits
+// the SVG's coordinate system and zoom. We set innerText imperatively once per
+// session (on mount / layer change) so React re-renders don't stomp the
+// cursor position; subsequent edits are reported via onInput.
+function InlineTextEditor({ layer, commit, onExit }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (el.innerText !== layer.text) el.innerText = layer.text;
+    el.focus();
+    // Place the caret at the end of the text.
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layer.id]);
+  const align = { start: "left", middle: "center", end: "right" }[
+    layer.textAlign
+  ] ?? "left";
+  return (
+    <div
+      xmlns="http://www.w3.org/1999/xhtml"
+      ref={ref}
+      contentEditable
+      suppressContentEditableWarning
+      spellCheck={false}
+      onInput={(e) => {
+        const text = e.currentTarget.innerText.replace(/\n$/, "");
+        const m = measureTextLayer(layer, { text });
+        commit((prev) =>
+          prev.map((l) =>
+            l.id === layer.id
+              ? { ...l, text, width: m.width, height: m.height }
+              : l,
+          ),
+        );
+      }}
+      onBlur={onExit}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          onExit();
+        }
+      }}
+      style={{
+        outline: "1px dashed #cc4722",
+        outlineOffset: "-1px",
+        padding: 0,
+        fontSize: layer.fontSize,
+        fontFamily: layer.fontFamily,
+        fontWeight: layer.fontWeight,
+        fontStyle: layer.fontStyle ?? "normal",
+        letterSpacing: `${layer.letterSpacing ?? 0}px`,
+        lineHeight: layer.lineHeight ?? TEXT_LINE_HEIGHT,
+        color: layer.fillGradient ? layer.fillGradient.from : layer.fill,
+        textAlign: align,
+        whiteSpace: "pre-wrap",
+        cursor: "text",
+        background: "transparent",
+        minWidth: "1em",
+        display: "inline-block",
+      }}
+    />
+  );
+}
+
 function NumField({ label, value, onChange }) {
   return (
     <label className="sidebar__field">
@@ -2119,6 +2426,8 @@ function LayerNode({ layer, selected }) {
           fontSize={layer.fontSize}
           fontFamily={layer.fontFamily}
           fontWeight={layer.fontWeight}
+          fontStyle={layer.fontStyle ?? "normal"}
+          letterSpacing={layer.letterSpacing ?? 0}
           fill={fill}
           stroke={layer.strokeWidth ? layer.stroke : "none"}
           strokeWidth={layer.strokeWidth || 0}
@@ -2132,7 +2441,7 @@ function LayerNode({ layer, selected }) {
             <tspan
               key={i}
               x={tx}
-              dy={i === 0 ? 0 : `${TEXT_LINE_HEIGHT}em`}
+              dy={i === 0 ? 0 : `${layer.lineHeight ?? TEXT_LINE_HEIGHT}em`}
             >
               {line.length ? line : "​"}
             </tspan>
