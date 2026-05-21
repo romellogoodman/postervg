@@ -260,21 +260,89 @@ function serializeLayerToSvg(l) {
 
 function App() {
   const [layers, setLayers] = useState([]);
-  const [selectedId, setSelectedId] = useState(null);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [tool, setTool] = useState("select");
   const [fillColor, setFillColor] = useState("#1b1b1b");
   const [strokeColor, setStrokeColor] = useState("none");
   const [strokeWidth, setStrokeWidth] = useState(2);
   const [activeTarget, setActiveTarget] = useState("fill"); // 'fill' | 'stroke'
   const [drawing, setDrawing] = useState(null); // { type, start, current }
-  const [drag, setDrag] = useState(null); // { mode, layerId, startPointer, startLayer, handle? }
+  const [drag, setDrag] = useState(null); // { mode, layerId, layerIds?, startPointer, startLayer, startLayers?, handle? }
+  const [marquee, setMarquee] = useState(null); // { start, current, additive }
   const [dropping, setDropping] = useState(false);
+  // History: past/future hold snapshots of `layers`. Selection is UI state and
+  // is deliberately not undoable.
+  const [past, setPast] = useState([]);
+  const [future, setFuture] = useState([]);
   const svgRef = useRef(null);
+  // Track the latest layers synchronously so imperative helpers (commit/undo,
+  // drag snapshots) can read without stale closures.
+  const layersRef = useRef(layers);
+  useEffect(() => {
+    layersRef.current = layers;
+  }, [layers]);
+  // Snapshot of `layers` taken at the start of a drag/resize/rotate, so we can
+  // push a single history entry on pointerup instead of one per move frame.
+  const dragSnapshotRef = useRef(null);
 
-  const selected = useMemo(
-    () => layers.find((l) => l.id === selectedId) || null,
-    [layers, selectedId],
+  const selectedLayers = useMemo(
+    () => layers.filter((l) => selectedIds.has(l.id)),
+    [layers, selectedIds],
   );
+  // Back-compat alias: a single "primary" selection drives the Properties
+  // panel, PaintSection target, and single-layer overlay handles.
+  const selected = selectedLayers[0] || null;
+
+  // Selection helpers.
+  const selectOnly = useCallback((id) => {
+    setSelectedIds(id == null ? new Set() : new Set([id]));
+  }, []);
+  const selectToggle = useCallback((id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const selectMany = useCallback((ids) => {
+    setSelectedIds(new Set(ids));
+  }, []);
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+
+  // Commit a layer mutation and record the previous state on the undo stack.
+  // Use for discrete actions (add/remove/property edit); raw `setLayers` is
+  // reserved for per-frame updates during a drag.
+  const commit = useCallback((updater) => {
+    const prev = layersRef.current;
+    const next = typeof updater === "function" ? updater(prev) : updater;
+    if (next === prev) return;
+    setPast((p) => [...p, prev]);
+    setFuture([]);
+    setLayers(next);
+  }, []);
+
+  const undo = useCallback(() => {
+    setPast((p) => {
+      if (p.length === 0) return p;
+      const prev = p[p.length - 1];
+      const current = layersRef.current;
+      setFuture((f) => [current, ...f]);
+      setLayers(prev);
+      return p.slice(0, -1);
+    });
+  }, []);
+
+  const redo = useCallback(() => {
+    setFuture((f) => {
+      if (f.length === 0) return f;
+      const next = f[0];
+      const current = layersRef.current;
+      setPast((p) => [...p, current]);
+      setLayers(next);
+      return f.slice(1);
+    });
+  }, []);
 
   // Convert a client (mouse) coordinate to SVG user-space coordinate.
   const clientToSvg = useCallback((clientX, clientY) => {
@@ -299,38 +367,79 @@ function App() {
       )
         return;
       const k = e.key.toLowerCase();
+      const mod = e.metaKey || e.ctrlKey;
+      // Undo / redo first so tool-letter fallbacks don't swallow ⌘Z etc.
+      if (mod && k === "z" && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+        return;
+      }
+      if ((mod && k === "z" && e.shiftKey) || (mod && k === "y")) {
+        e.preventDefault();
+        redo();
+        return;
+      }
       if (k === "v") setTool("select");
       else if (k === "r") setTool("rect");
       else if (k === "o") setTool("ellipse");
       else if (k === "l") setTool("line");
       else if (k === "t") setTool("text");
-      else if (k === "escape") setSelectedId(null);
+      else if (k === "escape") clearSelection();
       else if (k === "backspace" || k === "delete") {
-        if (selectedId) {
-          setLayers((prev) => prev.filter((l) => l.id !== selectedId));
-          setSelectedId(null);
+        if (selectedIds.size) {
+          commit((prev) => prev.filter((l) => !selectedIds.has(l.id)));
+          clearSelection();
         }
-      } else if (k === "d" && (e.metaKey || e.ctrlKey)) {
-        if (selectedId) {
+      } else if (k === "d" && mod) {
+        if (selectedIds.size) {
           e.preventDefault();
-          setLayers((prev) => {
-            const i = prev.findIndex((l) => l.id === selectedId);
-            if (i < 0) return prev;
-            const clone = {
-              ...prev[i],
-              id: nextId(),
-              x: prev[i].x + 16,
-              y: prev[i].y + 16,
-              name: prev[i].name + " copy",
-            };
-            return [...prev.slice(0, i + 1), clone, ...prev.slice(i + 1)];
+          const cloneIds = [];
+          commit((prev) => {
+            // Duplicate each selected layer in-place with a +16/+16 offset.
+            const result = [];
+            for (const l of prev) {
+              result.push(l);
+              if (selectedIds.has(l.id)) {
+                const id = nextId();
+                cloneIds.push(id);
+                result.push({
+                  ...l,
+                  id,
+                  x: l.x + 16,
+                  y: l.y + 16,
+                  name: l.name + " copy",
+                });
+              }
+            }
+            return result;
           });
+          selectMany(cloneIds);
         }
+      } else if (
+        k === "arrowleft" ||
+        k === "arrowright" ||
+        k === "arrowup" ||
+        k === "arrowdown"
+      ) {
+        if (!selectedIds.size) return;
+        e.preventDefault();
+        const step = e.shiftKey ? 10 : 1;
+        let dx = 0;
+        let dy = 0;
+        if (k === "arrowleft") dx = -step;
+        else if (k === "arrowright") dx = step;
+        else if (k === "arrowup") dy = -step;
+        else if (k === "arrowdown") dy = step;
+        commit((prev) =>
+          prev.map((l) =>
+            selectedIds.has(l.id) ? { ...l, x: l.x + dx, y: l.y + dy } : l,
+          ),
+        );
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedId]);
+  }, [selectedIds, commit, clearSelection, selectMany, undo, redo]);
 
   // Pointer handling on the SVG canvas
   const handleCanvasPointerDown = (e) => {
@@ -342,16 +451,39 @@ function App() {
       if (hitLayerId) {
         const l = layers.find((x) => x.id === hitLayerId);
         if (!l || l.locked) return;
-        setSelectedId(hitLayerId);
+        // Shift-click toggles membership; plain click on a non-selected layer
+        // replaces the selection. Clicking an already-selected layer keeps the
+        // whole set so the user can drag a group.
+        let moveIds;
+        if (e.shiftKey) {
+          const next = new Set(selectedIds);
+          if (next.has(hitLayerId)) next.delete(hitLayerId);
+          else next.add(hitLayerId);
+          setSelectedIds(next);
+          moveIds = [...next];
+        } else if (selectedIds.has(hitLayerId)) {
+          moveIds = [...selectedIds];
+        } else {
+          setSelectedIds(new Set([hitLayerId]));
+          moveIds = [hitLayerId];
+        }
+        const startLayers = layers
+          .filter((x) => moveIds.includes(x.id))
+          .map((x) => ({ ...x }));
+        dragSnapshotRef.current = layersRef.current;
         setDrag({
           mode: "move",
-          layerId: hitLayerId,
+          layerIds: moveIds,
           startPointer: pt,
-          startLayer: { ...l },
+          startLayers,
         });
         e.currentTarget.setPointerCapture(e.pointerId);
       } else {
-        setSelectedId(null);
+        // Empty-canvas click: start a marquee. Shift extends the current
+        // selection; otherwise the marquee replaces it on pointerup.
+        if (!e.shiftKey) clearSelection();
+        setMarquee({ start: pt, current: pt, additive: e.shiftKey });
+        e.currentTarget.setPointerCapture(e.pointerId);
       }
       return;
     }
@@ -362,14 +494,14 @@ function App() {
     if (tool === "text") {
       const paint = { fill: fillColor, stroke: strokeColor, strokeWidth };
       const layer = defaultTextLayer(pt.x, pt.y, paint);
-      setLayers((prev) => [...prev, layer]);
-      setSelectedId(layer.id);
+      commit((prev) => [...prev, layer]);
+      selectOnly(layer.id);
       setTool("select");
       return;
     }
 
     // Drawing tool
-    setSelectedId(null);
+    clearSelection();
     setDrawing({ type: tool, start: pt, current: pt });
     e.currentTarget.setPointerCapture(e.pointerId);
   };
@@ -380,16 +512,22 @@ function App() {
       setDrawing((d) => (d ? { ...d, current: pt } : d));
       return;
     }
+    if (marquee) {
+      setMarquee((m) => (m ? { ...m, current: pt } : m));
+      return;
+    }
     if (drag) {
       if (drag.mode === "move") {
         const dx = pt.x - drag.startPointer.x;
         const dy = pt.y - drag.startPointer.y;
+        // Multi-layer move: apply the same delta to every layer whose start
+        // position was captured on pointerdown.
+        const startById = new Map(drag.startLayers.map((l) => [l.id, l]));
         setLayers((prev) =>
-          prev.map((l) =>
-            l.id === drag.layerId
-              ? { ...l, x: drag.startLayer.x + dx, y: drag.startLayer.y + dy }
-              : l,
-          ),
+          prev.map((l) => {
+            const s = startById.get(l.id);
+            return s ? { ...l, x: s.x + dx, y: s.y + dy } : l;
+          }),
         );
       } else if (drag.mode === "resize") {
         const sl = drag.startLayer;
@@ -512,11 +650,48 @@ function App() {
             paint,
           );
         }
-        setLayers((prev) => [...prev, layer]);
-        setSelectedId(layer.id);
+        commit((prev) => [...prev, layer]);
+        selectOnly(layer.id);
         setTool("select");
       }
       setDrawing(null);
+    }
+    if (marquee) {
+      // Commit the marquee: pick every unlocked layer whose bbox intersects.
+      const x1 = Math.min(marquee.start.x, marquee.current.x);
+      const y1 = Math.min(marquee.start.y, marquee.current.y);
+      const x2 = Math.max(marquee.start.x, marquee.current.x);
+      const y2 = Math.max(marquee.start.y, marquee.current.y);
+      // Treat a tiny marquee as a deliberate empty click (already cleared).
+      if (x2 - x1 > 2 || y2 - y1 > 2) {
+        const hit = layers
+          .filter(
+            (l) =>
+              !l.locked &&
+              l.x < x2 &&
+              l.x + l.width > x1 &&
+              l.y < y2 &&
+              l.y + l.height > y1,
+          )
+          .map((l) => l.id);
+        if (marquee.additive) {
+          const next = new Set(selectedIds);
+          for (const id of hit) next.add(id);
+          setSelectedIds(next);
+        } else {
+          selectMany(hit);
+        }
+      }
+      setMarquee(null);
+    }
+    if (drag && dragSnapshotRef.current) {
+      // One history entry per drag gesture, regardless of move frame count.
+      const snap = dragSnapshotRef.current;
+      if (snap !== layersRef.current) {
+        setPast((p) => [...p, snap]);
+        setFuture([]);
+      }
+      dragSnapshotRef.current = null;
     }
     setDrag(null);
     try {
@@ -530,6 +705,7 @@ function App() {
     e.stopPropagation();
     if (!selected) return;
     const pt = clientToSvg(e.clientX, e.clientY);
+    dragSnapshotRef.current = layersRef.current;
     setDrag({
       mode: "resize",
       layerId: selected.id,
@@ -544,6 +720,7 @@ function App() {
     e.stopPropagation();
     if (!selected) return;
     const pt = clientToSvg(e.clientX, e.clientY);
+    dragSnapshotRef.current = layersRef.current;
     setDrag({
       mode: "rotate",
       layerId: selected.id,
@@ -587,30 +764,36 @@ function App() {
         });
       }
       if (news.length) {
-        setLayers((prev) => [...prev, ...news]);
-        setSelectedId(news[news.length - 1].id);
+        commit((prev) => [...prev, ...news]);
+        selectOnly(news[news.length - 1].id);
       }
     },
-    [clientToSvg],
+    [clientToSvg, commit, selectOnly],
   );
 
   // Layers panel ops
   const toggleVisible = (id) =>
-    setLayers((prev) =>
+    commit((prev) =>
       prev.map((l) => (l.id === id ? { ...l, visible: !l.visible } : l)),
     );
   const toggleLocked = (id) =>
-    setLayers((prev) =>
+    commit((prev) =>
       prev.map((l) => (l.id === id ? { ...l, locked: !l.locked } : l)),
     );
   const renameLayer = (id, name) =>
-    setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, name } : l)));
+    commit((prev) => prev.map((l) => (l.id === id ? { ...l, name } : l)));
   const removeLayer = (id) => {
-    setLayers((prev) => prev.filter((l) => l.id !== id));
-    if (selectedId === id) setSelectedId(null);
+    commit((prev) => prev.filter((l) => l.id !== id));
+    if (selectedIds.has(id)) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
   };
   const moveLayer = (id, dir) => {
-    setLayers((prev) => {
+    commit((prev) => {
       const i = prev.findIndex((l) => l.id === id);
       if (i < 0) return prev;
       const j = dir === "up" ? i + 1 : i - 1;
@@ -642,8 +825,8 @@ ${body}
   const doClear = () => {
     if (!layers.length) return;
     if (window.confirm("Clear all layers?")) {
-      setLayers([]);
-      setSelectedId(null);
+      commit([]);
+      clearSelection();
     }
   };
 
@@ -702,13 +885,6 @@ ${body}
 
   return (
     <div className="editor">
-      <header className="editor__header">
-        <div className="editor__brand">postervg</div>
-        <div className="editor__hint">
-          drop SVGs · draw shapes · stack in layers
-        </div>
-      </header>
-
       <aside className="editor__sidebar sidebar">
         <div className="sidebar__section">
           <div className="sidebar__label">Tool</div>
@@ -729,7 +905,7 @@ ${body}
 
         <PaintSection
           selected={selected}
-          setLayers={setLayers}
+          commit={commit}
           fillColor={fillColor}
           setFillColor={setFillColor}
           strokeColor={strokeColor}
@@ -742,13 +918,20 @@ ${body}
 
         {selected && (
           <div className="sidebar__section">
-            <div className="sidebar__label">Properties</div>
+            <div className="sidebar__label">
+              Properties
+              {selectedIds.size > 1 && (
+                <span className="sidebar__label-meta">
+                  · {selectedIds.size} selected
+                </span>
+              )}
+            </div>
             <div className="sidebar__fields">
               <NumField
                 label="X"
                 value={Math.round(selected.x)}
                 onChange={(v) =>
-                  setLayers((prev) =>
+                  commit((prev) =>
                     prev.map((l) =>
                       l.id === selected.id ? { ...l, x: v } : l,
                     ),
@@ -759,7 +942,7 @@ ${body}
                 label="Y"
                 value={Math.round(selected.y)}
                 onChange={(v) =>
-                  setLayers((prev) =>
+                  commit((prev) =>
                     prev.map((l) =>
                       l.id === selected.id ? { ...l, y: v } : l,
                     ),
@@ -770,7 +953,7 @@ ${body}
                 label="W"
                 value={Math.round(selected.width)}
                 onChange={(v) =>
-                  setLayers((prev) =>
+                  commit((prev) =>
                     prev.map((l) =>
                       l.id === selected.id
                         ? { ...l, width: Math.max(2, v) }
@@ -783,7 +966,7 @@ ${body}
                 label="H"
                 value={Math.round(selected.height)}
                 onChange={(v) =>
-                  setLayers((prev) =>
+                  commit((prev) =>
                     prev.map((l) =>
                       l.id === selected.id
                         ? { ...l, height: Math.max(2, v) }
@@ -796,7 +979,7 @@ ${body}
                 label="Rot"
                 value={Math.round(selected.rotation || 0)}
                 onChange={(v) =>
-                  setLayers((prev) =>
+                  commit((prev) =>
                     prev.map((l) =>
                       l.id === selected.id ? { ...l, rotation: v } : l,
                     ),
@@ -822,7 +1005,7 @@ ${body}
                   selected.fontFamily,
                   selected.fontWeight,
                 );
-                setLayers((prev) =>
+                commit((prev) =>
                   prev.map((l) =>
                     l.id === selected.id
                       ? { ...l, text, width: m.width, height: m.height }
@@ -843,7 +1026,7 @@ ${body}
                     selected.fontFamily,
                     selected.fontWeight,
                   );
-                  setLayers((prev) =>
+                  commit((prev) =>
                     prev.map((l) =>
                       l.id === selected.id
                         ? {
@@ -868,7 +1051,7 @@ ${body}
                   key={a.id}
                   className={`sidebar__align-btn${selected.textAlign === a.id ? " sidebar__align-btn--active" : ""}`}
                   onClick={() =>
-                    setLayers((prev) =>
+                    commit((prev) =>
                       prev.map((l) =>
                         l.id === selected.id
                           ? { ...l, textAlign: a.id }
@@ -884,7 +1067,7 @@ ${body}
               <button
                 className={`sidebar__align-btn sidebar__align-btn--bold${selected.fontWeight === "bold" ? " sidebar__align-btn--active" : ""}`}
                 onClick={() =>
-                  setLayers((prev) =>
+                  commit((prev) =>
                     prev.map((l) => {
                       if (l.id !== selected.id) return l;
                       const fontWeight =
@@ -957,16 +1140,44 @@ ${body}
             vectorEffect="non-scaling-stroke"
           />
           {layers.map((l) => (
-            <LayerNode key={l.id} layer={l} selected={l.id === selectedId} />
+            <LayerNode key={l.id} layer={l} selected={selectedIds.has(l.id)} />
           ))}
           {preview}
-          {selected && (
+          {/* Single-layer selection shows full handles; multi-select shows a
+              union outline only (group transform handles come in a later
+              milestone). */}
+          {selectedLayers.length === 1 && (
             <SelectionOverlay
               layer={selected}
               onHandle={startHandleDrag}
               onRotate={startRotateDrag}
             />
           )}
+          {selectedLayers.length > 1 && (
+            <MultiSelectionOutline layers={selectedLayers} />
+          )}
+          {marquee &&
+            (() => {
+              const x = Math.min(marquee.start.x, marquee.current.x);
+              const y = Math.min(marquee.start.y, marquee.current.y);
+              const w = Math.abs(marquee.current.x - marquee.start.x);
+              const h = Math.abs(marquee.current.y - marquee.start.y);
+              return (
+                <rect
+                  className="marquee"
+                  x={x}
+                  y={y}
+                  width={w}
+                  height={h}
+                  fill="rgba(148, 219, 255, 0.18)"
+                  stroke="#1b1b1b"
+                  strokeWidth="1"
+                  strokeDasharray="3 3"
+                  vectorEffect="non-scaling-stroke"
+                  pointerEvents="none"
+                />
+              );
+            })()}
         </svg>
         {dropping && (
           <div className="editor__drop-overlay">DROP SVG FILES TO PLACE</div>
@@ -985,8 +1196,11 @@ ${body}
             .map((l) => (
               <li
                 key={l.id}
-                className={`panel__item${l.id === selectedId ? " panel__item--active" : ""}`}
-                onClick={() => setSelectedId(l.id)}
+                className={`panel__item${selectedIds.has(l.id) ? " panel__item--active" : ""}`}
+                onClick={(e) => {
+                  if (e.shiftKey) selectToggle(l.id);
+                  else selectOnly(l.id);
+                }}
               >
                 <button
                   className="panel__icon"
@@ -1058,7 +1272,7 @@ ${body}
 
 function PaintSection({
   selected,
-  setLayers,
+  commit,
   fillColor,
   setFillColor,
   strokeColor,
@@ -1083,7 +1297,7 @@ function PaintSection({
 
   const applyColor = (color) => {
     if (selected && !selected.locked) {
-      setLayers((prev) =>
+      commit((prev) =>
         prev.map((l) => {
           if (l.id !== selected.id) return l;
           if (activeTarget === "fill") return { ...l, fill: color };
@@ -1102,7 +1316,7 @@ function PaintSection({
 
   const applyStrokeWidth = (w) => {
     if (selected && !selected.locked) {
-      setLayers((prev) =>
+      commit((prev) =>
         prev.map((l) =>
           l.id === selected.id
             ? { ...l, strokeWidth: Math.max(0, w) }
@@ -1116,7 +1330,7 @@ function PaintSection({
 
   const swap = () => {
     if (selected && !selected.locked) {
-      setLayers((prev) =>
+      commit((prev) =>
         prev.map((l) => {
           if (l.id !== selected.id) return l;
           const newFill = l.strokeWidth ? l.stroke : "none";
@@ -1137,7 +1351,7 @@ function PaintSection({
 
   const resetDefaults = () => {
     if (selected && !selected.locked) {
-      setLayers((prev) =>
+      commit((prev) =>
         prev.map((l) =>
           l.id === selected.id
             ? {
@@ -1516,6 +1730,33 @@ function SelectionOverlay({ layer, onHandle, onRotate }) {
           onPointerDown={onHandle(h.id)}
         />
       ))}
+    </g>
+  );
+}
+
+// Shown when multiple layers are selected: just a union bbox outline, no
+// handles. Group-transform handles belong to a later milestone.
+function MultiSelectionOutline({ layers }) {
+  if (!layers.length) return null;
+  // Union bbox computed in axis-aligned space; for rotated layers this is a
+  // simple hull around the axis-aligned bbox, not the rotated footprint.
+  const x1 = Math.min(...layers.map((l) => l.x));
+  const y1 = Math.min(...layers.map((l) => l.y));
+  const x2 = Math.max(...layers.map((l) => l.x + l.width));
+  const y2 = Math.max(...layers.map((l) => l.y + l.height));
+  return (
+    <g className="overlay" pointerEvents="none">
+      <rect
+        x={x1}
+        y={y1}
+        width={x2 - x1}
+        height={y2 - y1}
+        fill="none"
+        stroke="#1b1b1b"
+        strokeWidth="1"
+        strokeDasharray="4 3"
+        vectorEffect="non-scaling-stroke"
+      />
     </g>
   );
 }

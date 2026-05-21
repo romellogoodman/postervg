@@ -19,10 +19,14 @@ All UI and logic live in two files (intentional for a prototype):
   - `parseSvgFile` / `serializeAttrs` — SVG import (`:119`, `:160`)
   - `defaultLayerForShape` / `serializeLayerToSvg` — layer model (`:185`, `:218`)
   - `App` — state, pointer handlers, drop, keyboard, layout (`:261`)
-  - `PaintSection` / `PaintBox` — fill/stroke controls (`:1059`, `:1287`)
-  - `LayerNode` — per-layer SVG rendering (`:1332`)
-  - `SelectionOverlay` — transform handles (`:1448`)
+  - `PaintSection` / `PaintBox` — fill/stroke controls (`:1273`, `:1501`)
+  - `LayerNode` — per-layer SVG rendering (`:1546`)
+  - `SelectionOverlay` / `MultiSelectionOutline` — single-layer handles + multi-select outline (`:1662`, `:1739`)
 - `src/App.scss` — all styles, BEM, tokens at the top
+
+**State inside `App`:**
+- `selectedIds` is a `Set<string>`; `selectedLayers` is the filtered array; `selected` aliases `selectedLayers[0]` for back-compat with single-layer Properties/PaintSection paths.
+- `commit(updater)` records the previous `layers` on the undo stack before applying the update. Use for any discrete mutation. Raw `setLayers` is reserved for per-frame drag updates; a single history entry is pushed on pointerup via `dragSnapshotRef`.
 
 Refactor into multiple files only when a subsystem clearly outgrows its
 section. Don't pre-split.

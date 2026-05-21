@@ -13,11 +13,9 @@
   --font-ui: "Inter", system-ui, sans-serif;
   --size-label: 10px;
   --size-body: 11px;
-  --size-brand: 14px;
 
   --sidebar-w: 220px;
   --panel-w: 300px;
-  --header-h: 44px;
 
   --gutter: 16px;
 }
@@ -52,35 +50,10 @@ input {
 .editor {
   display: grid;
   grid-template-columns: var(--sidebar-w) 1fr var(--panel-w);
-  grid-template-rows: var(--header-h) 1fr;
-  grid-template-areas:
-    "header header header"
-    "sidebar canvas panel";
+  grid-template-rows: 1fr;
+  grid-template-areas: "sidebar canvas panel";
   height: 100vh;
   width: 100vw;
-
-  &__header {
-    grid-area: header;
-    border-bottom: 1px solid var(--ohmg-rule);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 var(--gutter);
-    background: var(--ohmg-white);
-  }
-
-  &__brand {
-    font-size: var(--size-brand);
-    font-weight: 600;
-    letter-spacing: -0.01em;
-  }
-
-  &__hint {
-    font-size: var(--size-label);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--ohmg-muted);
-  }
 
   &__sidebar {
     grid-area: sidebar;
@@ -150,6 +123,12 @@ input {
     font-weight: 500;
     color: var(--ohmg-black);
     margin-bottom: 8px;
+  }
+
+  &__label-meta {
+    color: var(--ohmg-muted);
+    font-weight: 400;
+    margin-left: 4px;
   }
 
   &__section {

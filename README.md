@@ -10,7 +10,9 @@ everything in a layer stack, and export the result as a single SVG.
 - **Drop SVGs**: drag any `.svg` file onto the canvas to place it as a layer
 - **Shape Tools**: rectangle, ellipse, line — click-drag to draw
 - **Text Tool**: click to place; edit content, size, alignment, and weight in the sidebar. Resize handles scale the font-size uniformly.
-- **Select & Transform**: move, resize, rotate (hold Shift to snap rotation)
+- **Undo / Redo**: `⌘Z` / `⌘⇧Z` on every discrete mutation; drags collapse into a single history entry.
+- **Select & Transform**: click, shift-click, or drag a marquee on empty canvas to select one or many layers; move, resize, rotate (hold Shift to snap rotation). Multi-select shows a dashed union outline and moves together; resize/rotate handles appear only for a single selection.
+- **Nudge**: arrow keys move the selection 1px; Shift+arrow moves 10px.
 - **Fill / Stroke**: paired fill and stroke swatches with swap, none, and a custom color picker
 - **Layers Panel**: reorder, hide, lock, rename, delete
 - **Export**: save the composition as a standalone `.svg`
@@ -31,8 +33,12 @@ npm run dev
 | `O` | ellipse |
 | `L` | line |
 | `T` | text |
+| `⌘Z` / `Ctrl+Z` | undo |
+| `⌘⇧Z` / `Ctrl+Y` | redo |
+| `←` `→` `↑` `↓` | nudge 1px (hold Shift for 10px) |
 | `⌫` / `Del` | delete selected |
 | `⌘D` / `Ctrl+D` | duplicate selected |
+| `Shift`+click | add/remove layer from selection |
 | `Esc` | deselect |
 
 ## Tech Stack
