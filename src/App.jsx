@@ -1,515 +1,47 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import "./App.scss";
 
-const PALETTE = [
-  { name: "black", value: "#1b1b1b" },
-  { name: "red", value: "#cc4722" },
-  { name: "yellow", value: "#ffbf35" },
-  { name: "blue", value: "#94dbff" },
-  { name: "lilac", value: "#b0afed" },
-  { name: "pink", value: "#ff94c2" },
-  { name: "white", value: "#ffffff" },
-];
-
-// Starting canvas dimensions and background; both become mutable state inside
-// App so the user can switch between presets or pick a custom size.
-const DEFAULT_CANVAS_W = 1200;
-const DEFAULT_CANVAS_H = 900;
-const DEFAULT_CANVAS_BG = "#ffffff";
-
-// Common poster / social-card sizes. `custom` is handled specially — it
-// doesn't change dimensions, just unlocks the W/H fields.
-const CANVAS_PRESETS = [
-  { id: "landscape", label: "LANDSCAPE", w: 1200, h: 900 },
-  { id: "square", label: "SQUARE", w: 1080, h: 1080 },
-  { id: "portrait", label: "PORTRAIT", w: 1080, h: 1350 },
-  { id: "poster", label: "POSTER", w: 1240, h: 1754 }, // A4 at ~150dpi
-  { id: "og", label: "BANNER", w: 1200, h: 630 },
-];
-
-// Grid sizes (in SVG user units). 0 means "no grid, no snap"; any non-zero
-// value both renders a dot pattern and snaps drag positions to multiples.
-const GRID_PRESETS = [0, 8, 16, 24, 32, 64];
-
-// localStorage key for the one-slot autosaved draft. Bump the version suffix
-// if the layer schema changes in a way that would break hydration.
-const DRAFT_STORAGE_KEY = "postervg:draft:v1";
-
-// How close (in SVG units) the dragged edge/center must be to a candidate
-// before it snaps. Generous enough that users feel it without having to aim.
-const SNAP_THRESHOLD = 6;
-
-// For one axis: try snapping the left edge, right edge, and center of the
-// dragged layer to any of `candidates`. Returns the smallest correction (0 if
-// nothing is within threshold) and the candidate line that earned the snap.
-// Ties prefer the probe tested first (left > right > center) and the candidate
-// tested first, so the rendered guide is deterministic.
-function snapAxis(pos, size, candidates, threshold) {
-  let bestDelta = 0;
-  let bestGuide = null;
-  let bestAbs = Infinity;
-  // Probe the left edge first so it wins on perfect alignment to another
-  // layer's left edge, which is the most intuitive result.
-  const probes = [pos, pos + size / 2, pos + size];
-  for (const p of probes) {
-    for (const c of candidates) {
-      const d = c - p;
-      const abs = Math.abs(d);
-      if (abs < threshold && abs < bestAbs) {
-        bestAbs = abs;
-        bestDelta = d;
-        bestGuide = c;
-      }
-    }
-  }
-  return { delta: bestDelta, guide: bestGuide };
-}
-
-const TOOLS = [
-  { id: "select", label: "SELECT", key: "V" },
-  { id: "rect", label: "RECT", key: "R" },
-  { id: "ellipse", label: "ELLIPSE", key: "O" },
-  { id: "line", label: "LINE", key: "L" },
-  { id: "polygon", label: "POLYGON", key: "P" },
-  { id: "text", label: "TEXT", key: "T" },
-];
-
-const TEXT_FONT_FAMILY = "Inter, system-ui, sans-serif";
-const TEXT_LINE_HEIGHT = 1.2;
-
-// Curated set of web fonts. Each entry pairs a display label with a rendering
-// stack and an optional Google Fonts CSS URL used to embed the font into
-// exported SVGs so viewers without the font installed still see the intended
-// typography. `inter` has no Google URL because the editor itself already
-// loads Inter via index.html.
-const FONT_FAMILIES = [
-  {
-    id: "inter",
-    label: "INTER",
-    stack: "Inter, system-ui, sans-serif",
-    google: null,
-  },
-  {
-    id: "playfair",
-    label: "SERIF",
-    stack: '"Playfair Display", Georgia, serif',
-    google:
-      "https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&display=swap",
-  },
-  {
-    id: "jetbrains",
-    label: "MONO",
-    stack: '"JetBrains Mono", "Courier New", monospace',
-    google:
-      "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap",
-  },
-  {
-    id: "space-grotesk",
-    label: "GROTESK",
-    stack: '"Space Grotesk", Inter, sans-serif',
-    google:
-      "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;700&display=swap",
-  },
-];
-
-const FONT_FAMILY_BY_ID = Object.fromEntries(
-  FONT_FAMILIES.map((f) => [f.id, f]),
-);
-const FONT_FAMILY_BY_STACK = Object.fromEntries(
-  FONT_FAMILIES.map((f) => [f.stack, f]),
-);
-
-// Look up the preset that owns a given rendering stack (or null if the user
-// somehow has a layer with a custom stack).
-function fontPresetForLayer(layer) {
-  if (layer.fontFamilyId) return FONT_FAMILY_BY_ID[layer.fontFamilyId] || null;
-  return FONT_FAMILY_BY_STACK[layer.fontFamily] || null;
-}
-
-// Curated subset of CSS blend modes — the ones users reach for on posters.
-const BLEND_OPTIONS = [
-  "normal",
-  "multiply",
-  "screen",
-  "overlay",
-  "darken",
-  "lighten",
-  "difference",
-];
-
-// Dash preset → SVG `stroke-dasharray` value. Solid is the absence of a
-// dasharray and must be skipped on serialization.
-const DASH_PRESETS = {
-  solid: null,
-  dash: "8 4",
-  dot: "2 4",
-  "dash-dot": "8 4 2 4",
-};
-
-const CAP_OPTIONS = ["butt", "round", "square"];
-const JOIN_OPTIONS = ["miter", "round", "bevel"];
-
-// Map a 0..359° angle to the linear-gradient vector in bounding-box units.
-// angle=0 is left→right, 90 is top→bottom — the web convention.
-function gradientLine(angle) {
-  // angle=0° → horizontal (left→right). angle=90° → vertical (top→bottom),
-  // since SVG y increases downward. The start/end line is centered on the
-  // bounding box in objectBoundingBox units.
-  const rad = (angle * Math.PI) / 180;
-  const dx = Math.cos(rad) / 2;
-  const dy = Math.sin(rad) / 2;
-  return { x1: 0.5 - dx, y1: 0.5 - dy, x2: 0.5 + dx, y2: 0.5 + dy };
-}
-
-const gradientId = (layer) => `gr-${layer.id}`;
-
-function serializeGradientDef(layer) {
-  const g = layer.fillGradient;
-  if (!g) return "";
-  const { x1, y1, x2, y2 } = gradientLine(g.angle ?? 90);
-  return `<linearGradient id="${gradientId(layer)}" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"><stop offset="0" stop-color="${g.from}"/><stop offset="1" stop-color="${g.to}"/></linearGradient>`;
-}
-
-const fillPaintValue = (layer) =>
-  layer.fillGradient ? `url(#${gradientId(layer)})` : layer.fill;
-
-// Compute `<polygon points="...">` coordinates for a regular polygon or star
-// inscribed in the layer's bbox. `starRatio` < 1 alternates outer/inner radii
-// to form a star; 1 is a regular polygon. First vertex points up.
-function polygonPoints(layer) {
-  const cx = layer.x + layer.width / 2;
-  const cy = layer.y + layer.height / 2;
-  const rx = layer.width / 2;
-  const ry = layer.height / 2;
-  const sides = Math.max(3, Math.round(layer.sides ?? 5));
-  const ratio = Math.max(0.05, Math.min(1, layer.starRatio ?? 1));
-  const isStar = ratio < 1;
-  const n = isStar ? sides * 2 : sides;
-  const pts = [];
-  for (let i = 0; i < n; i++) {
-    const t = -Math.PI / 2 + (i * 2 * Math.PI) / n;
-    const rScale = isStar && i % 2 === 1 ? ratio : 1;
-    const x = cx + rx * rScale * Math.cos(t);
-    const y = cy + ry * rScale * Math.sin(t);
-    pts.push(`${x.toFixed(2)},${y.toFixed(2)}`);
-  }
-  return pts.join(" ");
-}
-
-// Convenience: read style properties with defaults so layers created before
-// these fields existed still render correctly.
-const layerOpacity = (l) => (l.opacity == null ? 1 : l.opacity);
-const layerBlend = (l) =>
-  l.blendMode && l.blendMode !== "normal" ? l.blendMode : null;
-const layerDashArray = (l) => {
-  const preset = l.strokeDash ?? "solid";
-  return DASH_PRESETS[preset] ?? null;
-};
-const layerCap = (l) => l.strokeCap ?? "butt";
-const layerJoin = (l) => l.strokeJoin ?? "miter";
-
-let _uid = 0;
-const nextId = () => `l${Date.now().toString(36)}${(_uid++).toString(36)}`;
-
-// Measure rendered text via a hidden off-DOM SVG so the layer bbox can track
-// content as text/size/weight change. Returns natural content dimensions.
-let _measureSvg = null;
-let _measureTextEl = null;
-function measureText(text, opts = {}) {
-  const {
-    fontSize = 48,
-    fontFamily = TEXT_FONT_FAMILY,
-    fontWeight = "normal",
-    fontStyle = "normal",
-    letterSpacing = 0,
-    lineHeight = TEXT_LINE_HEIGHT,
-  } = opts;
-  if (typeof document === "undefined") {
-    return { width: fontSize * 2, height: fontSize };
-  }
-  if (!_measureSvg) {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("width", "0");
-    svg.setAttribute("height", "0");
-    svg.style.position = "absolute";
-    svg.style.left = "-9999px";
-    svg.style.top = "-9999px";
-    svg.style.visibility = "hidden";
-    svg.style.pointerEvents = "none";
-    const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
-    t.setAttribute("dominant-baseline", "hanging");
-    svg.appendChild(t);
-    document.body.appendChild(svg);
-    _measureSvg = svg;
-    _measureTextEl = t;
-  }
-  const el = _measureTextEl;
-  el.setAttribute("font-size", String(fontSize));
-  el.setAttribute("font-family", fontFamily);
-  el.setAttribute("font-weight", String(fontWeight));
-  el.setAttribute("font-style", String(fontStyle));
-  el.setAttribute("letter-spacing", String(letterSpacing));
-  while (el.firstChild) el.removeChild(el.firstChild);
-  const lines = String(text ?? "").split("\n");
-  lines.forEach((line, i) => {
-    const tspan = document.createElementNS(
-      "http://www.w3.org/2000/svg",
-      "tspan",
-    );
-    tspan.setAttribute("x", "0");
-    if (i > 0) tspan.setAttribute("dy", `${lineHeight}em`);
-    // Empty lines still need a glyph to contribute height; zero-width space keeps
-    // the line visually empty but measurable.
-    tspan.textContent = line.length ? line : "​";
-    el.appendChild(tspan);
-  });
-  const bbox = el.getBBox();
-  return {
-    width: Math.max(1, bbox.width),
-    height: Math.max(1, bbox.height),
-  };
-}
-
-// Read typography opts off a text layer, optionally overriding specific
-// fields. Handy when a handler is computing a new value and wants the bbox
-// after the edit applies.
-function measureTextLayer(layer, overrides = {}) {
-  return measureText(overrides.text ?? layer.text, {
-    fontSize: overrides.fontSize ?? layer.fontSize,
-    fontFamily: overrides.fontFamily ?? layer.fontFamily,
-    fontWeight: overrides.fontWeight ?? layer.fontWeight,
-    fontStyle: overrides.fontStyle ?? layer.fontStyle ?? "normal",
-    letterSpacing: overrides.letterSpacing ?? layer.letterSpacing ?? 0,
-    lineHeight: overrides.lineHeight ?? layer.lineHeight ?? TEXT_LINE_HEIGHT,
-  });
-}
-
-function textAnchorX(layer) {
-  if (layer.textAlign === "middle") return layer.x + layer.width / 2;
-  if (layer.textAlign === "end") return layer.x + layer.width;
-  return layer.x;
-}
-
-function defaultTextLayer(x, y, paint) {
-  const text = "Text";
-  const fontSize = 48;
-  const fontWeight = "normal";
-  const { width, height } = measureText(text, {
-    fontSize,
-    fontFamily: TEXT_FONT_FAMILY,
-    fontWeight,
-  });
-  return {
-    id: nextId(),
-    type: "text",
-    name: "Text",
-    visible: true,
-    locked: false,
-    x,
-    y,
-    width,
-    height,
-    rotation: 0,
-    // Text with no fill is usually a mistake; fall back to black ink.
-    fill: paint.fill === "none" ? "#1b1b1b" : paint.fill,
-    stroke: paint.stroke,
-    strokeWidth: paint.stroke === "none" ? 0 : paint.strokeWidth,
-    text,
-    fontSize,
-    fontFamily: TEXT_FONT_FAMILY,
-    fontFamilyId: "inter",
-    fontWeight,
-    fontStyle: "normal",
-    letterSpacing: 0,
-    lineHeight: TEXT_LINE_HEIGHT,
-    textAlign: "start",
-    opacity: 1,
-    blendMode: "normal",
-    strokeDash: "solid",
-    strokeCap: "butt",
-    strokeJoin: "miter",
-  };
-}
-
-function parseSvgFile(text) {
-  const doc = new DOMParser().parseFromString(text, "image/svg+xml");
-  const root = doc.querySelector("svg");
-  if (!root) return null;
-  const vb = root.getAttribute("viewBox");
-  let [vx, vy, vw, vh] = [0, 0, 0, 0];
-  if (vb) {
-    const parts = vb.trim().split(/[\s,]+/).map(Number);
-    if (parts.length === 4) [vx, vy, vw, vh] = parts;
-  }
-  const attrW = parseFloat(root.getAttribute("width")) || vw || 200;
-  const attrH = parseFloat(root.getAttribute("height")) || vh || 200;
-  if (!vw || !vh) {
-    vw = attrW;
-    vh = attrH;
-  }
-  // Preserve root-level presentation attributes (fill, stroke, class, style, etc.)
-  // so paths that rely on inherited styling from the root render correctly.
-  const overridden = new Set([
-    "x",
-    "y",
-    "width",
-    "height",
-    "viewBox",
-    "xmlns",
-    "xmlns:xlink",
-    "preserveaspectratio",
-  ]);
-  const rootAttrs = {};
-  for (const a of root.attributes) {
-    if (!overridden.has(a.name.toLowerCase())) rootAttrs[a.name] = a.value;
-  }
-  return {
-    viewBox: `${vx} ${vy} ${vw} ${vh}`,
-    innerHtml: root.innerHTML,
-    rootAttrs,
-    naturalW: attrW,
-    naturalH: attrH,
-  };
-}
-
-function serializeAttrs(attrs) {
-  return Object.entries(attrs || {})
-    .map(
-      ([k, v]) =>
-        `${k}="${String(v).replace(/&/g, "&amp;").replace(/"/g, "&quot;")}"`,
-    )
-    .join(" ");
-}
-
-function bboxCenter(l) {
-  return { cx: l.x + l.width / 2, cy: l.y + l.height / 2 };
-}
-
-// Convert a point from screen coords to the un-rotated local space of a layer.
-// Rotation is about the bbox center.
-function screenToLocal(layer, px, py) {
-  const { cx, cy } = bboxCenter(layer);
-  const rad = (-(layer.rotation || 0) * Math.PI) / 180;
-  const dx = px - cx;
-  const dy = py - cy;
-  const lx = cx + dx * Math.cos(rad) - dy * Math.sin(rad);
-  const ly = cy + dx * Math.sin(rad) + dy * Math.cos(rad);
-  return { lx, ly };
-}
-
-function defaultLayerForShape(type, x, y, w, h, paint) {
-  // paint: { fill, stroke, strokeWidth }
-  const base = {
-    id: nextId(),
-    type,
-    name:
-      type === "rect"
-        ? "Rectangle"
-        : type === "ellipse"
-          ? "Ellipse"
-          : type === "line"
-            ? "Line"
-            : type === "polygon"
-              ? "Polygon"
-              : "Layer",
-    visible: true,
-    locked: false,
-    x,
-    y,
-    width: w,
-    height: h,
-    rotation: 0,
-    fill: paint.fill,
-    stroke: paint.stroke,
-    strokeWidth: paint.stroke === "none" ? 0 : paint.strokeWidth,
-    opacity: 1,
-    blendMode: "normal",
-    strokeDash: "solid",
-    strokeCap: "butt",
-    strokeJoin: "miter",
-  };
-  if (type === "polygon") {
-    base.sides = 5;
-    base.starRatio = 1;
-  }
-  if (type === "line") {
-    // Lines have no interior; use stroke (fallback to fill if stroke is none).
-    base.fill = "none";
-    base.stroke = paint.stroke !== "none" ? paint.stroke : paint.fill;
-    base.strokeWidth = Math.max(1, paint.strokeWidth || 2);
-  }
-  return base;
-}
-
-function serializeLayerToSvg(l) {
-  if (!l.visible) return "";
-  const { cx, cy } = bboxCenter(l);
-  const rot = l.rotation
-    ? ` transform="rotate(${l.rotation} ${cx} ${cy})"`
-    : "";
-  // Common style attrs: opacity, blend mode, and stroke dash/cap/join. Emit
-  // only when they differ from the SVG defaults, to keep exports tidy.
-  const opacity = layerOpacity(l);
-  const blend = layerBlend(l);
-  const opacityPart = opacity < 1 ? ` opacity="${opacity}"` : "";
-  const stylePart = blend ? ` style="mix-blend-mode:${blend}"` : "";
-  const dash = layerDashArray(l);
-  const cap = layerCap(l);
-  const join = layerJoin(l);
-  const dashPart = dash ? ` stroke-dasharray="${dash}"` : "";
-  const capPart = cap !== "butt" ? ` stroke-linecap="${cap}"` : "";
-  const joinPart = join !== "miter" ? ` stroke-linejoin="${join}"` : "";
-  const strokeExtras = `${dashPart}${capPart}${joinPart}`;
-  const fillAttr = fillPaintValue(l);
-  if (l.type === "rect") {
-    return `<rect x="${l.x}" y="${l.y}" width="${l.width}" height="${l.height}" fill="${fillAttr}"${l.strokeWidth ? ` stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${strokeExtras}` : ""}${opacityPart}${stylePart}${rot}/>`;
-  }
-  if (l.type === "ellipse") {
-    const rx = l.width / 2;
-    const ry = l.height / 2;
-    return `<ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}" fill="${fillAttr}"${l.strokeWidth ? ` stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${strokeExtras}` : ""}${opacityPart}${stylePart}${rot}/>`;
-  }
-  if (l.type === "line") {
-    return `<line x1="${l.x}" y1="${l.y}" x2="${l.x + l.width}" y2="${l.y + l.height}" stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${strokeExtras}${opacityPart}${stylePart}${rot}/>`;
-  }
-  if (l.type === "polygon") {
-    return `<polygon points="${polygonPoints(l)}" fill="${fillAttr}"${l.strokeWidth ? ` stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${strokeExtras}` : ""}${opacityPart}${stylePart}${rot}/>`;
-  }
-  if (l.type === "svg") {
-    const extra = l.rootAttrs ? " " + serializeAttrs(l.rootAttrs) : "";
-    // Opacity + blend go on the wrapping <g> so they apply to the whole
-    // imported subtree.
-    return `<g${opacityPart}${stylePart}${rot}><svg x="${l.x}" y="${l.y}" width="${l.width}" height="${l.height}" viewBox="${l.viewBox}" preserveAspectRatio="xMidYMid meet"${extra}>${l.svgContent}</svg></g>`;
-  }
-  if (l.type === "text") {
-    const escape = (s) =>
-      String(s)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
-    const tx = textAnchorX(l);
-    const lines = String(l.text ?? "").split("\n");
-    const lineHeight = l.lineHeight ?? TEXT_LINE_HEIGHT;
-    const tspans = lines
-      .map(
-        (line, i) =>
-          `<tspan x="${tx}"${i > 0 ? ` dy="${lineHeight}em"` : ""}>${escape(line.length ? line : " ")}</tspan>`,
-      )
-      .join("");
-    const strokePart = l.strokeWidth
-      ? ` stroke="${l.stroke}" stroke-width="${l.strokeWidth}"${strokeExtras}`
-      : "";
-    const styleParts = [];
-    if ((l.fontStyle ?? "normal") !== "normal")
-      styleParts.push(` font-style="${l.fontStyle}"`);
-    if ((l.letterSpacing ?? 0) !== 0)
-      styleParts.push(` letter-spacing="${l.letterSpacing}"`);
-    const extras = styleParts.join("");
-    return `<text x="${tx}" y="${l.y}" font-size="${l.fontSize}" font-family="${escape(l.fontFamily)}" font-weight="${l.fontWeight}"${extras} text-anchor="${l.textAlign}" dominant-baseline="hanging" fill="${fillAttr}"${strokePart}${opacityPart}${stylePart}${rot}>${tspans}</text>`;
-  }
-  return "";
-}
+import {
+  BLEND_OPTIONS,
+  CANVAS_PRESETS,
+  DEFAULT_CANVAS_BG,
+  DEFAULT_CANVAS_H,
+  DEFAULT_CANVAS_W,
+  DRAFT_STORAGE_KEY,
+  FONT_FAMILIES,
+  FONT_FAMILY_BY_ID,
+  GRID_PRESETS,
+  SNAP_THRESHOLD,
+  TEXT_LINE_HEIGHT,
+  TOOLS,
+} from "./constants.js";
+import { nextId } from "./lib/id.js";
+import {
+  bboxCenter,
+  polygonPoints,
+  screenToLocal,
+  snapAxis,
+} from "./lib/geometry.js";
+import {
+  fontPresetForLayer,
+  measureTextLayer,
+} from "./lib/text.js";
+import {
+  defaultLayerForShape,
+  defaultTextLayer,
+  layerOpacity,
+  serializeGradientDef,
+} from "./lib/layers.js";
+import { parseSvgFile, serializeLayerToSvg } from "./lib/svgIO.js";
+import { InlineTextEditor } from "./components/InlineTextEditor.jsx";
+import { LayerNode } from "./components/LayerNode.jsx";
+import { NumField } from "./components/NumField.jsx";
+import { PaintSection } from "./components/PaintSection.jsx";
+import { RepeatSection } from "./components/RepeatSection.jsx";
+import {
+  MultiSelectionOutline,
+  SelectionOverlay,
+} from "./components/SelectionOverlay.jsx";
 
 function App() {
   const [layers, setLayers] = useState([]);
@@ -531,27 +63,27 @@ function App() {
   // Transient smart-guide lines shown while dragging a layer. Cleared on
   // pointerup. Each entry is { axis: 'x' | 'y', value: number }.
   const [activeGuides, setActiveGuides] = useState([]);
-  // History: past/future hold snapshots of `layers`. Selection is UI state and
-  // is deliberately not undoable.
-  const [past, setPast] = useState([]);
-  const [future, setFuture] = useState([]);
+  // History: past/future hold snapshots of `layers`. Selection is UI state
+  // and is deliberately not undoable.
+  const [, setPast] = useState([]);
+  const [, setFuture] = useState([]);
   const svgRef = useRef(null);
-  // Track the latest layers synchronously so imperative helpers (commit/undo,
-  // drag snapshots) can read without stale closures.
+  // Track the latest layers synchronously so imperative helpers (commit,
+  // undo, drag snapshots) can read without stale closures.
   const layersRef = useRef(layers);
   useEffect(() => {
     layersRef.current = layers;
   }, [layers]);
-  // Snapshot of `layers` taken at the start of a drag/resize/rotate, so we can
-  // push a single history entry on pointerup instead of one per move frame.
+  // Snapshot of `layers` taken at the start of a drag/resize/rotate so we
+  // can push a single history entry on pointerup instead of one per frame.
   const dragSnapshotRef = useRef(null);
 
   const selectedLayers = useMemo(
     () => layers.filter((l) => selectedIds.has(l.id)),
     [layers, selectedIds],
   );
-  // Back-compat alias: a single "primary" selection drives the Properties
-  // panel, PaintSection target, and single-layer overlay handles.
+  // Back-compat alias: the "primary" selection drives the Properties panel,
+  // PaintSection target, and single-layer overlay handles.
   const selected = selectedLayers[0] || null;
 
   // Selection helpers.
@@ -796,9 +328,9 @@ function App() {
       if (hitLayerId) {
         const l = layers.find((x) => x.id === hitLayerId);
         if (!l || l.locked) return;
-        // Shift-click toggles membership; plain click on a non-selected layer
-        // replaces the selection. Clicking an already-selected layer keeps the
-        // whole set so the user can drag a group.
+        // Shift-click toggles membership; plain click on a non-selected
+        // layer replaces the selection. Clicking an already-selected layer
+        // keeps the whole set so the user can drag a group.
         let moveIds;
         if (e.shiftKey) {
           const next = new Set(selectedIds);
@@ -893,8 +425,8 @@ function App() {
           dy += ySnap.delta;
           if (gridSize > 0) {
             // Grid fallback — only snap axes the smart guides didn't already
-            // catch, so alignment to other shapes wins over alignment to the
-            // grid.
+            // catch, so alignment to other shapes wins over alignment to
+            // the grid.
             if (xSnap.guide == null) {
               const snapped = Math.round((sl.x + dx) / gridSize) * gridSize;
               dx = snapped - sl.x;
@@ -936,10 +468,10 @@ function App() {
           nh = Math.max(2, sl.y + sl.height - ly);
           ny = sl.y + sl.height - nh;
         }
-        // For text layers, resize handles scale font-size uniformly instead of
-        // stretching the bbox independently. We derive the scale from whichever
-        // axis the active handle drives, then re-measure to snap the bbox to
-        // the new content extent.
+        // For text layers, resize handles scale font-size uniformly instead
+        // of stretching the bbox independently. We derive the scale from
+        // whichever axis the active handle drives, then re-measure to snap
+        // the bbox to the new content extent.
         let nextFontSize = null;
         if (sl.type === "text") {
           const affectsX = h.includes("e") || h.includes("w");
@@ -956,19 +488,19 @@ function App() {
           const m = measureTextLayer(sl, { fontSize: nextFontSize });
           nw = m.width;
           nh = m.height;
-          // Anchor to the opposite edge from the handle so the grabbed corner
-          // tracks the pointer.
+          // Anchor to the opposite edge from the handle so the grabbed
+          // corner tracks the pointer.
           nx = h.includes("w") ? sl.x + sl.width - nw : sl.x;
           ny = h.includes("n") ? sl.y + sl.height - nh : sl.y;
         }
-        // Keep center stable under rotation when top-left changes.
-        // Recompute the original center and new center; shift so rotated center stays put.
+        // Keep center stable under rotation when top-left changes. Recompute
+        // the original center and new center; shift so rotated center stays
+        // put.
         if (sl.rotation) {
           const oldCx = sl.x + sl.width / 2;
           const oldCy = sl.y + sl.height / 2;
           const newCxLocal = nx + nw / 2;
           const newCyLocal = ny + nh / 2;
-          // Rotate the center offset back into screen coords.
           const rad = (sl.rotation * Math.PI) / 180;
           const ddx = newCxLocal - oldCx;
           const ddy = newCyLocal - oldCy;
@@ -1191,7 +723,8 @@ function App() {
     });
   };
 
-  // Align every selected layer to a shared edge of the selection's union bbox.
+  // Align every selected layer to a shared edge of the selection's union
+  // bbox.
   const alignSelected = (edge) => {
     if (selectedLayers.length < 2) return;
     const sel = selectedLayers;
@@ -1199,8 +732,16 @@ function App() {
     const maxX = Math.max(...sel.map((l) => l.x + l.width));
     const minY = Math.min(...sel.map((l) => l.y));
     const maxY = Math.max(...sel.map((l) => l.y + l.height));
-    const setX = { left: () => minX, hcenter: (w) => (minX + maxX) / 2 - w / 2, right: (w) => maxX - w };
-    const setY = { top: () => minY, vcenter: (h) => (minY + maxY) / 2 - h / 2, bottom: (h) => maxY - h };
+    const setX = {
+      left: () => minX,
+      hcenter: (w) => (minX + maxX) / 2 - w / 2,
+      right: (w) => maxX - w,
+    };
+    const setY = {
+      top: () => minY,
+      vcenter: (h) => (minY + maxY) / 2 - h / 2,
+      bottom: (h) => maxY - h,
+    };
     commit((prev) =>
       prev.map((l) => {
         if (!selectedIds.has(l.id)) return l;
@@ -1236,9 +777,7 @@ function App() {
     );
   };
 
-  // Grid duplicate of the primary selection. Count×Count feels more intuitive
-  // than separate row/col knobs at this scope, but we keep them separate so
-  // users can make strips.
+  // Grid duplicate of the primary selection.
   const createArray = (cols, rows, gapX, gapY) => {
     if (!selected || selectedLayers.length !== 1) return;
     const base = selected;
@@ -1261,24 +800,18 @@ function App() {
     }
   };
 
-  // Radial duplicate: place `count` copies around a circle of `radius` centred
-  // on the primary selection. Each copy is also rotated to face outward so
-  // arrows/triangles/text follow the circle.
+  // Radial duplicate: place `count` copies around a circle of `radius`
+  // centred on the primary selection.
   const createRadial = (count, radius, rotateWithRing) => {
     if (!selected || selectedLayers.length !== 1) return;
     const base = selected;
     const bcx = base.x + base.width / 2;
     const bcy = base.y + base.height / 2;
-    // Keep the original where it is (angle 0); clones sweep around.
     const news = [];
     for (let i = 1; i < count; i++) {
       const a = (i * 2 * Math.PI) / count;
-      // Move the layer's center by the ring offset, which is the vector from
-      // the ring centre (= base centre) to the new position. base stays at
-      // (bcx - radius, 0) relative to ring centre (bcx, bcy - 0)? Simpler:
-      // position each clone's centre at (bcx + radius*(cos a - 1), bcy +
-      // radius*sin a). This keeps the original on the circle and rotates
-      // around the centre at (bcx - radius, bcy).
+      // Keeps the original on the circle and rotates around the centre at
+      // (bcx - radius, bcy).
       const cxClone = bcx + radius * (Math.cos(a) - 1);
       const cyClone = bcy + radius * Math.sin(a);
       news.push({
@@ -1303,10 +836,9 @@ function App() {
   const buildExportSvg = () => {
     const body = layers.map(serializeLayerToSvg).join("\n");
     // Collect distinct Google Font URLs used by any visible text layer and
-    // embed them as @import in a <style> block — this lets downstream SVG
-    // viewers render with the intended typography even without the font
-    // installed locally. (Viewers that strip <style> will fall back to the
-    // next font in the stack.)
+    // embed them as @import in a <style> block so downstream SVG viewers
+    // render with the intended typography even without the font installed
+    // locally.
     const fontUrls = Array.from(
       new Set(
         layers
@@ -1394,8 +926,8 @@ ${body}
     if (window.confirm("Clear all layers?")) {
       commit([]);
       clearSelection();
-      // Clear the autosaved draft too so a reload doesn't resurrect what the
-      // user just deleted.
+      // Clear the autosaved draft too so a reload doesn't resurrect what
+      // the user just deleted.
       try {
         localStorage.removeItem(DRAFT_STORAGE_KEY);
       } catch {
@@ -1405,7 +937,8 @@ ${body}
   };
 
   // Hydrate the one-slot draft on mount. We do this in an effect (not in
-  // useState initialisers) so a parse failure doesn't crash the first render.
+  // useState initialisers) so a parse failure doesn't crash the first
+  // render.
   useEffect(() => {
     try {
       const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
@@ -1423,8 +956,8 @@ ${body}
   }, []);
 
   // Autosave after quiet for 400ms so rapid edits (sliders, drags) don't
-  // hammer localStorage. Persists the full document state minus transient UI
-  // (selection, editingId, history).
+  // hammer localStorage. Persists the full document state minus transient
+  // UI (selection, editingId, history).
   useEffect(() => {
     const h = setTimeout(() => {
       try {
@@ -1492,7 +1025,14 @@ ${body}
     if (type === "polygon") {
       // Preview uses the default polygon shape (pentagon) inscribed in the
       // in-progress bbox so the user can see what they're about to commit.
-      const points = polygonPoints({ x, y, width: w, height: h, sides: 5, starRatio: 1 });
+      const points = polygonPoints({
+        x,
+        y,
+        width: w,
+        height: h,
+        sides: 5,
+        starRatio: 1,
+      });
       return (
         <polygon
           points={points}
@@ -1891,7 +1431,10 @@ ${body}
                 );
               }}
             />
-            <label className="sidebar__field sidebar__field--wide" style={{ marginTop: 8 }}>
+            <label
+              className="sidebar__field sidebar__field--wide"
+              style={{ marginTop: 8 }}
+            >
               <span className="sidebar__field-label">FONT</span>
               <select
                 className="sidebar__select"
@@ -1973,7 +1516,9 @@ ${body}
                 type="range"
                 min="80"
                 max="200"
-                value={Math.round((selected.lineHeight ?? TEXT_LINE_HEIGHT) * 100)}
+                value={Math.round(
+                  (selected.lineHeight ?? TEXT_LINE_HEIGHT) * 100,
+                )}
                 onChange={(e) => {
                   const lineHeight = Number(e.target.value) / 100;
                   const m = measureTextLayer(selected, { lineHeight });
@@ -1992,7 +1537,9 @@ ${body}
                 }}
               />
               <span className="sidebar__slider-value">
-                {Math.round((selected.lineHeight ?? TEXT_LINE_HEIGHT) * 100)}
+                {Math.round(
+                  (selected.lineHeight ?? TEXT_LINE_HEIGHT) * 100,
+                )}
               </span>
             </div>
             <div className="sidebar__align-group" style={{ marginTop: 8 }}>
@@ -2007,9 +1554,7 @@ ${body}
                   onClick={() =>
                     commit((prev) =>
                       prev.map((l) =>
-                        l.id === selected.id
-                          ? { ...l, textAlign: a.id }
-                          : l,
+                        l.id === selected.id ? { ...l, textAlign: a.id } : l,
                       ),
                     )
                   }
@@ -2083,7 +1628,9 @@ ${body}
                 )?.id ?? "custom"
               }
               onChange={(e) => {
-                const preset = CANVAS_PRESETS.find((p) => p.id === e.target.value);
+                const preset = CANVAS_PRESETS.find(
+                  (p) => p.id === e.target.value,
+                );
                 if (preset) {
                   setCanvasW(preset.w);
                   setCanvasH(preset.h);
@@ -2225,10 +1772,10 @@ ${body}
             </>
           )}
           {layers.map((l) =>
-            // While inline-editing a text layer we render the editor in place
-            // of the glyphs so the user doesn't see both at once.
+            // While inline-editing a text layer we render the editor in
+            // place of the glyphs so the user doesn't see both at once.
             l.id === editingId ? null : (
-              <LayerNode key={l.id} layer={l} selected={selectedIds.has(l.id)} />
+              <LayerNode key={l.id} layer={l} />
             ),
           )}
           {editingId &&
@@ -2287,8 +1834,8 @@ ${body}
               />
             ),
           )}
-          {/* Single-layer selection shows full handles; multi-select shows a
-              union outline only (group transform handles come in a later
+          {/* Single-layer selection shows full handles; multi-select shows
+              a union outline only (group transform handles come in a later
               milestone). */}
           {selectedLayers.length === 1 && (
             <SelectionOverlay
@@ -2406,768 +1953,13 @@ ${body}
               </li>
             ))}
           {!layers.length && (
-            <li className="panel__empty">No layers yet. Drop an SVG or draw a shape.</li>
+            <li className="panel__empty">
+              No layers yet. Drop an SVG or draw a shape.
+            </li>
           )}
         </ul>
       </aside>
     </div>
-  );
-}
-
-function PaintSection({
-  selected,
-  commit,
-  fillColor,
-  setFillColor,
-  strokeColor,
-  setStrokeColor,
-  strokeWidth,
-  setStrokeWidth,
-  activeTarget,
-  setActiveTarget,
-}) {
-  // When a layer is selected, the indicator reflects its paint; swatch clicks
-  // mutate that layer. With no selection, clicks adjust the defaults used for
-  // new shapes.
-  const displayFill = selected ? selected.fill ?? "none" : fillColor;
-  const displayStroke = selected
-    ? selected.strokeWidth
-      ? selected.stroke ?? "none"
-      : "none"
-    : strokeColor;
-  const displayStrokeWidth = selected
-    ? selected.strokeWidth || 0
-    : strokeWidth;
-
-  const applyColor = (color) => {
-    if (selected && !selected.locked) {
-      commit((prev) =>
-        prev.map((l) => {
-          if (l.id !== selected.id) return l;
-          if (activeTarget === "fill") return { ...l, fill: color };
-          const sw = l.strokeWidth || 2;
-          return { ...l, stroke: color, strokeWidth: color === "none" ? 0 : sw };
-        }),
-      );
-    } else if (activeTarget === "fill") {
-      setFillColor(color);
-    } else {
-      setStrokeColor(color);
-    }
-  };
-
-  const applyNone = () => applyColor("none");
-
-  const applyStrokeWidth = (w) => {
-    if (selected && !selected.locked) {
-      commit((prev) =>
-        prev.map((l) =>
-          l.id === selected.id
-            ? { ...l, strokeWidth: Math.max(0, w) }
-            : l,
-        ),
-      );
-    } else {
-      setStrokeWidth(Math.max(0, w));
-    }
-  };
-
-  const swap = () => {
-    if (selected && !selected.locked) {
-      commit((prev) =>
-        prev.map((l) => {
-          if (l.id !== selected.id) return l;
-          const newFill = l.strokeWidth ? l.stroke : "none";
-          const newStroke = l.fill;
-          return {
-            ...l,
-            fill: newFill,
-            stroke: newStroke === "none" ? l.stroke : newStroke,
-            strokeWidth: newStroke === "none" ? 0 : l.strokeWidth || 2,
-          };
-        }),
-      );
-    } else {
-      setFillColor(strokeColor);
-      setStrokeColor(fillColor);
-    }
-  };
-
-  const resetDefaults = () => {
-    if (selected && !selected.locked) {
-      commit((prev) =>
-        prev.map((l) =>
-          l.id === selected.id
-            ? {
-                ...l,
-                fill: "#ffffff",
-                stroke: "#1b1b1b",
-                strokeWidth: l.strokeWidth || 2,
-              }
-            : l,
-        ),
-      );
-    } else {
-      setFillColor("#ffffff");
-      setStrokeColor("#1b1b1b");
-      setStrokeWidth(2);
-    }
-  };
-
-  return (
-    <div className="sidebar__section">
-      <div className="sidebar__label">Fill / Stroke</div>
-      <div className="paint">
-        <div className="paint__indicator">
-          <PaintBox
-            color={activeTarget === "stroke" ? displayStroke : displayFill}
-            kind={activeTarget === "stroke" ? "stroke" : "fill"}
-            active={true}
-            onClick={() => {}}
-            className="paint__box paint__box--front"
-          />
-          <PaintBox
-            color={activeTarget === "stroke" ? displayFill : displayStroke}
-            kind={activeTarget === "stroke" ? "fill" : "stroke"}
-            active={false}
-            onClick={() =>
-              setActiveTarget(activeTarget === "fill" ? "stroke" : "fill")
-            }
-            className="paint__box paint__box--back"
-          />
-          <button
-            className="paint__swap"
-            onClick={swap}
-            title="Swap fill and stroke (X)"
-            aria-label="Swap fill and stroke"
-          >
-            ⇅
-          </button>
-        </div>
-        <div className="paint__meta">
-          <div className="paint__meta-label">
-            {activeTarget === "fill" ? "FILL" : "STROKE"}
-          </div>
-          <div className="paint__meta-value">
-            {activeTarget === "fill"
-              ? displayFill === "none"
-                ? "NONE"
-                : displayFill.toUpperCase()
-              : displayStroke === "none"
-                ? "NONE"
-                : displayStroke.toUpperCase()}
-          </div>
-          <div className="paint__quick">
-            <button
-              className="paint__quick-btn"
-              onClick={applyNone}
-              title="Set to none"
-            >
-              <span className="paint__none-glyph" aria-hidden />
-              NONE
-            </button>
-            <button
-              className="paint__quick-btn"
-              onClick={resetDefaults}
-              title="Default colors (white fill, black stroke)"
-            >
-              DEFAULT
-            </button>
-            {selected && activeTarget === "fill" && (
-              <button
-                className="paint__quick-btn"
-                onClick={() => {
-                  commit((prev) =>
-                    prev.map((l) => {
-                      if (l.id !== selected.id) return l;
-                      if (l.fillGradient) {
-                        // Flatten back to solid fill = the FROM stop.
-                        const { fillGradient: _drop, ...rest } = l;
-                        return { ...rest, fill: l.fillGradient.from };
-                      }
-                      const fromColor =
-                        l.fill && l.fill !== "none" ? l.fill : "#1b1b1b";
-                      return {
-                        ...l,
-                        fillGradient: {
-                          from: fromColor,
-                          to: "#ffffff",
-                          angle: 90,
-                        },
-                      };
-                    }),
-                  );
-                }}
-                title="Toggle linear gradient fill"
-              >
-                {selected.fillGradient ? "SOLID" : "GRAD"}
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div className="sidebar__swatches" style={{ marginTop: 10 }}>
-        {PALETTE.map((c) => {
-          const isActive =
-            (activeTarget === "fill" ? displayFill : displayStroke) === c.value;
-          return (
-            <button
-              key={c.value}
-              className={`sidebar__swatch${isActive ? " sidebar__swatch--active" : ""}`}
-              style={{ background: c.value }}
-              onClick={() => applyColor(c.value)}
-              title={c.name}
-            />
-          );
-        })}
-        <label
-          className="sidebar__swatch sidebar__swatch--picker"
-          title="Custom color"
-          style={{
-            background:
-              (activeTarget === "fill" ? displayFill : displayStroke) !==
-                "none" &&
-              !PALETTE.some(
-                (c) =>
-                  c.value ===
-                  (activeTarget === "fill" ? displayFill : displayStroke),
-              )
-                ? activeTarget === "fill"
-                  ? displayFill
-                  : displayStroke
-                : undefined,
-          }}
-        >
-          <input
-            type="color"
-            value={
-              (activeTarget === "fill" ? displayFill : displayStroke) ===
-              "none"
-                ? "#000000"
-                : activeTarget === "fill"
-                  ? displayFill
-                  : displayStroke
-            }
-            onChange={(e) => applyColor(e.target.value)}
-          />
-          <span className="paint__picker-glyph">+</span>
-        </label>
-      </div>
-
-      <label className="sidebar__field" style={{ marginTop: 10 }}>
-        <span className="sidebar__field-label">WIDTH</span>
-        <input
-          className="sidebar__field-input"
-          type="number"
-          min="0"
-          value={Math.round(displayStrokeWidth)}
-          onChange={(e) => {
-            const n = Number(e.target.value);
-            if (!Number.isNaN(n)) applyStrokeWidth(n);
-          }}
-        />
-      </label>
-      <StrokeStyleRow selected={selected} commit={commit} />
-    </div>
-  );
-}
-
-// Stroke-style controls (dash pattern, cap, join). Only meaningful when a
-// layer is selected; hidden otherwise because the defaults for new shapes
-// live in the defaultLayerForShape factory.
-function StrokeStyleRow({ selected, commit }) {
-  if (!selected || selected.locked) return null;
-  const setField = (field, value) =>
-    commit((prev) =>
-      prev.map((l) => (l.id === selected.id ? { ...l, [field]: value } : l)),
-    );
-  return (
-    <>
-      <label className="sidebar__field sidebar__field--wide" style={{ marginTop: 8 }}>
-        <span className="sidebar__field-label">DASH</span>
-        <select
-          className="sidebar__select"
-          value={selected.strokeDash ?? "solid"}
-          onChange={(e) => setField("strokeDash", e.target.value)}
-        >
-          {Object.keys(DASH_PRESETS).map((k) => (
-            <option key={k} value={k}>
-              {k.toUpperCase()}
-            </option>
-          ))}
-        </select>
-      </label>
-      <div className="sidebar__segmented" style={{ marginTop: 6 }}>
-        <span className="sidebar__field-label">CAP</span>
-        <div className="sidebar__segmented-group">
-          {CAP_OPTIONS.map((cap) => (
-            <button
-              key={cap}
-              className={`sidebar__segmented-btn${(selected.strokeCap ?? "butt") === cap ? " sidebar__segmented-btn--active" : ""}`}
-              onClick={() => setField("strokeCap", cap)}
-              title={cap}
-            >
-              {cap[0].toUpperCase()}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="sidebar__segmented" style={{ marginTop: 6 }}>
-        <span className="sidebar__field-label">JOIN</span>
-        <div className="sidebar__segmented-group">
-          {JOIN_OPTIONS.map((join) => (
-            <button
-              key={join}
-              className={`sidebar__segmented-btn${(selected.strokeJoin ?? "miter") === join ? " sidebar__segmented-btn--active" : ""}`}
-              onClick={() => setField("strokeJoin", join)}
-              title={join}
-            >
-              {join[0].toUpperCase()}
-            </button>
-          ))}
-        </div>
-      </div>
-    </>
-  );
-}
-
-function PaintBox({ color, kind, active, onClick, className }) {
-  const isNone = color === "none";
-  const fillStyle = kind === "fill" ? (isNone ? "transparent" : color) : "none";
-  const strokeStyle = kind === "stroke" ? (isNone ? "transparent" : color) : "none";
-  return (
-    <button
-      type="button"
-      className={`${className}${active ? " paint__box--active" : ""}`}
-      onClick={onClick}
-      title={kind === "fill" ? "Fill" : "Stroke"}
-    >
-      <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden>
-        {kind === "fill" ? (
-          <rect x="2" y="2" width="20" height="20" fill={fillStyle} stroke="#1b1b1b" strokeWidth="1" />
-        ) : (
-          <rect x="2" y="2" width="20" height="20" fill="transparent" stroke={strokeStyle === "none" ? "#1b1b1b" : strokeStyle} strokeWidth="4" />
-        )}
-        {kind === "stroke" && (
-          <rect x="7" y="7" width="10" height="10" fill="#ffffff" stroke="none" />
-        )}
-        {isNone && (
-          <line x1="2" y1="22" x2="22" y2="2" stroke="#cc4722" strokeWidth="2" />
-        )}
-      </svg>
-    </button>
-  );
-}
-
-// contentEditable div inside a <foreignObject> so the inline editor inherits
-// the SVG's coordinate system and zoom. We set innerText imperatively once per
-// session (on mount / layer change) so React re-renders don't stomp the
-// cursor position; subsequent edits are reported via onInput.
-function InlineTextEditor({ layer, commit, onExit }) {
-  const ref = useRef(null);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    if (el.innerText !== layer.text) el.innerText = layer.text;
-    el.focus();
-    // Place the caret at the end of the text.
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    range.collapse(false);
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layer.id]);
-  const align = { start: "left", middle: "center", end: "right" }[
-    layer.textAlign
-  ] ?? "left";
-  return (
-    <div
-      xmlns="http://www.w3.org/1999/xhtml"
-      ref={ref}
-      contentEditable
-      suppressContentEditableWarning
-      spellCheck={false}
-      onInput={(e) => {
-        const text = e.currentTarget.innerText.replace(/\n$/, "");
-        const m = measureTextLayer(layer, { text });
-        commit((prev) =>
-          prev.map((l) =>
-            l.id === layer.id
-              ? { ...l, text, width: m.width, height: m.height }
-              : l,
-          ),
-        );
-      }}
-      onBlur={onExit}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") {
-          e.preventDefault();
-          onExit();
-        }
-      }}
-      style={{
-        outline: "1px dashed #cc4722",
-        outlineOffset: "-1px",
-        padding: 0,
-        fontSize: layer.fontSize,
-        fontFamily: layer.fontFamily,
-        fontWeight: layer.fontWeight,
-        fontStyle: layer.fontStyle ?? "normal",
-        letterSpacing: `${layer.letterSpacing ?? 0}px`,
-        lineHeight: layer.lineHeight ?? TEXT_LINE_HEIGHT,
-        color: layer.fillGradient ? layer.fillGradient.from : layer.fill,
-        textAlign: align,
-        whiteSpace: "pre-wrap",
-        cursor: "text",
-        background: "transparent",
-        minWidth: "1em",
-        display: "inline-block",
-      }}
-    />
-  );
-}
-
-// Array + radial repeat controls for the primary selection. Each holds its
-// own local state so the inputs don't bloat App and its values persist while
-// the user tweaks before pressing the commit button.
-function RepeatSection({ selected, onArray, onRadial }) {
-  const [cols, setCols] = useState(3);
-  const [rows, setRows] = useState(1);
-  const [gapX, setGapX] = useState(20);
-  const [gapY, setGapY] = useState(20);
-  const [count, setCount] = useState(6);
-  const [radius, setRadius] = useState(160);
-  const [rotateWithRing, setRotateWithRing] = useState(false);
-  if (!selected || selected.locked) return null;
-  return (
-    <div className="sidebar__section">
-      <div className="sidebar__label">Repeat</div>
-      <div className="sidebar__fields">
-        <NumField label="Cols" value={cols} onChange={(v) => setCols(Math.max(1, Math.round(v)))} />
-        <NumField label="Rows" value={rows} onChange={(v) => setRows(Math.max(1, Math.round(v)))} />
-        <NumField label="GapX" value={gapX} onChange={setGapX} />
-        <NumField label="GapY" value={gapY} onChange={setGapY} />
-      </div>
-      <button
-        className="sidebar__button"
-        style={{ marginTop: 6 }}
-        onClick={() => onArray(cols, rows, gapX, gapY)}
-      >
-        ARRAY
-      </button>
-      <div className="sidebar__fields" style={{ marginTop: 6 }}>
-        <NumField label="Num" value={count} onChange={(v) => setCount(Math.max(2, Math.round(v)))} />
-        <NumField label="R" value={radius} onChange={(v) => setRadius(Math.max(1, Math.round(v)))} />
-      </div>
-      <label className="sidebar__toggle" style={{ marginTop: 4 }}>
-        <input
-          type="checkbox"
-          checked={rotateWithRing}
-          onChange={(e) => setRotateWithRing(e.target.checked)}
-        />
-        <span>Rotate copies</span>
-      </label>
-      <button
-        className="sidebar__button"
-        style={{ marginTop: 6 }}
-        onClick={() => onRadial(count, radius, rotateWithRing)}
-      >
-        RADIAL
-      </button>
-    </div>
-  );
-}
-
-function NumField({ label, value, onChange }) {
-  return (
-    <label className="sidebar__field">
-      <span className="sidebar__field-label">{label}</span>
-      <input
-        className="sidebar__field-input"
-        type="number"
-        value={value}
-        onChange={(e) => {
-          const n = Number(e.target.value);
-          if (!Number.isNaN(n)) onChange(n);
-        }}
-      />
-    </label>
-  );
-}
-
-function LayerNode({ layer, selected }) {
-  const { cx, cy } = bboxCenter(layer);
-  const rot = layer.rotation
-    ? `rotate(${layer.rotation} ${cx} ${cy})`
-    : undefined;
-  const blend = layerBlend(layer);
-  // Render opacity combines the visibility fade (muted for hidden layers so
-  // the user can still find them) with the user-set layer opacity.
-  const common = {
-    "data-layer-id": layer.id,
-    opacity: (layer.visible ? 1 : 0.15) * layerOpacity(layer),
-    style: {
-      pointerEvents: layer.locked ? "none" : "auto",
-      ...(blend ? { mixBlendMode: blend } : {}),
-    },
-    transform: rot,
-  };
-  // Stroke style extras (dash/cap/join) applied to any strokable element.
-  const dash = layerDashArray(layer);
-  const strokeStyle = {
-    ...(dash ? { strokeDasharray: dash } : {}),
-    strokeLinecap: layerCap(layer),
-    strokeLinejoin: layerJoin(layer),
-  };
-  // Gradient fills are referenced by url(#…); the <defs> is emitted inline as
-  // a fragment sibling of the rendered shape.
-  const fill = fillPaintValue(layer);
-  const gradientDef = layer.fillGradient ? (
-    <defs key="defs">
-      <linearGradient
-        id={gradientId(layer)}
-        {...gradientLine(layer.fillGradient.angle ?? 90)}
-      >
-        <stop offset="0" stopColor={layer.fillGradient.from} />
-        <stop offset="1" stopColor={layer.fillGradient.to} />
-      </linearGradient>
-    </defs>
-  ) : null;
-  if (layer.type === "rect") {
-    return (
-      <>
-        {gradientDef}
-        <rect
-          {...common}
-          x={layer.x}
-          y={layer.y}
-          width={layer.width}
-          height={layer.height}
-          fill={fill}
-          stroke={layer.strokeWidth ? layer.stroke : "none"}
-          strokeWidth={layer.strokeWidth}
-          {...strokeStyle}
-        />
-      </>
-    );
-  }
-  if (layer.type === "ellipse") {
-    return (
-      <>
-        {gradientDef}
-        <ellipse
-          {...common}
-          cx={cx}
-          cy={cy}
-          rx={layer.width / 2}
-          ry={layer.height / 2}
-          fill={fill}
-          stroke={layer.strokeWidth ? layer.stroke : "none"}
-          strokeWidth={layer.strokeWidth}
-          {...strokeStyle}
-        />
-      </>
-    );
-  }
-  if (layer.type === "line") {
-    return (
-      <line
-        {...common}
-        x1={layer.x}
-        y1={layer.y}
-        x2={layer.x + layer.width}
-        y2={layer.y + layer.height}
-        stroke={layer.stroke}
-        strokeWidth={Math.max(2, layer.strokeWidth || 2)}
-        {...strokeStyle}
-      />
-    );
-  }
-  if (layer.type === "polygon") {
-    return (
-      <>
-        {gradientDef}
-        <polygon
-          {...common}
-          points={polygonPoints(layer)}
-          fill={fill}
-          stroke={layer.strokeWidth ? layer.stroke : "none"}
-          strokeWidth={layer.strokeWidth}
-          {...strokeStyle}
-        />
-      </>
-    );
-  }
-  if (layer.type === "svg") {
-    const extra = layer.rootAttrs ? " " + serializeAttrs(layer.rootAttrs) : "";
-    const inner = `<svg x="${layer.x}" y="${layer.y}" width="${layer.width}" height="${layer.height}" viewBox="${layer.viewBox}" preserveAspectRatio="xMidYMid meet" overflow="visible"${extra}>${layer.svgContent}</svg>`;
-    return (
-      <g {...common}>
-        <rect
-          x={layer.x}
-          y={layer.y}
-          width={layer.width}
-          height={layer.height}
-          fill="transparent"
-          pointerEvents="all"
-        />
-        <g
-          pointerEvents="none"
-          dangerouslySetInnerHTML={{ __html: inner }}
-        />
-      </g>
-    );
-  }
-  if (layer.type === "text") {
-    const tx = textAnchorX(layer);
-    const lines = String(layer.text ?? "").split("\n");
-    return (
-      <g {...common}>
-        {gradientDef}
-        {/* Invisible hit target so empty space inside the bbox still selects. */}
-        <rect
-          x={layer.x}
-          y={layer.y}
-          width={layer.width}
-          height={layer.height}
-          fill="transparent"
-          pointerEvents="all"
-        />
-        <text
-          x={tx}
-          y={layer.y}
-          fontSize={layer.fontSize}
-          fontFamily={layer.fontFamily}
-          fontWeight={layer.fontWeight}
-          fontStyle={layer.fontStyle ?? "normal"}
-          letterSpacing={layer.letterSpacing ?? 0}
-          fill={fill}
-          stroke={layer.strokeWidth ? layer.stroke : "none"}
-          strokeWidth={layer.strokeWidth || 0}
-          {...strokeStyle}
-          textAnchor={layer.textAlign}
-          dominantBaseline="hanging"
-          pointerEvents="none"
-          style={{ userSelect: "none" }}
-        >
-          {lines.map((line, i) => (
-            <tspan
-              key={i}
-              x={tx}
-              dy={i === 0 ? 0 : `${layer.lineHeight ?? TEXT_LINE_HEIGHT}em`}
-            >
-              {line.length ? line : "​"}
-            </tspan>
-          ))}
-        </text>
-      </g>
-    );
-  }
-  return null;
-}
-
-function SelectionOverlay({ layer, onHandle, onRotate }) {
-  const { cx, cy } = bboxCenter(layer);
-  const handles = [
-    { id: "nw", x: layer.x, y: layer.y, cursor: "nwse-resize" },
-    { id: "n", x: cx, y: layer.y, cursor: "ns-resize" },
-    { id: "ne", x: layer.x + layer.width, y: layer.y, cursor: "nesw-resize" },
-    { id: "e", x: layer.x + layer.width, y: cy, cursor: "ew-resize" },
-    {
-      id: "se",
-      x: layer.x + layer.width,
-      y: layer.y + layer.height,
-      cursor: "nwse-resize",
-    },
-    { id: "s", x: cx, y: layer.y + layer.height, cursor: "ns-resize" },
-    { id: "sw", x: layer.x, y: layer.y + layer.height, cursor: "nesw-resize" },
-    { id: "w", x: layer.x, y: cy, cursor: "ew-resize" },
-  ];
-  const rotateHandle = { x: cx, y: layer.y - 30 };
-  const transform = layer.rotation
-    ? `rotate(${layer.rotation} ${cx} ${cy})`
-    : undefined;
-  const HS = 7; // handle size
-  return (
-    <g transform={transform} className="overlay" pointerEvents="none">
-      <rect
-        x={layer.x}
-        y={layer.y}
-        width={layer.width}
-        height={layer.height}
-        fill="none"
-        stroke="#1b1b1b"
-        strokeWidth="1"
-        vectorEffect="non-scaling-stroke"
-      />
-      <line
-        x1={cx}
-        y1={layer.y}
-        x2={rotateHandle.x}
-        y2={rotateHandle.y}
-        stroke="#1b1b1b"
-        strokeWidth="1"
-        vectorEffect="non-scaling-stroke"
-      />
-      <circle
-        cx={rotateHandle.x}
-        cy={rotateHandle.y}
-        r={6}
-        fill="#ffffff"
-        stroke="#1b1b1b"
-        strokeWidth="1"
-        vectorEffect="non-scaling-stroke"
-        pointerEvents="auto"
-        style={{ cursor: "grab" }}
-        onPointerDown={onRotate}
-      />
-      {handles.map((h) => (
-        <rect
-          key={h.id}
-          x={h.x - HS / 2}
-          y={h.y - HS / 2}
-          width={HS}
-          height={HS}
-          fill="#ffffff"
-          stroke="#1b1b1b"
-          strokeWidth="1"
-          vectorEffect="non-scaling-stroke"
-          pointerEvents="auto"
-          style={{ cursor: h.cursor }}
-          onPointerDown={onHandle(h.id)}
-        />
-      ))}
-    </g>
-  );
-}
-
-// Shown when multiple layers are selected: just a union bbox outline, no
-// handles. Group-transform handles belong to a later milestone.
-function MultiSelectionOutline({ layers }) {
-  if (!layers.length) return null;
-  // Union bbox computed in axis-aligned space; for rotated layers this is a
-  // simple hull around the axis-aligned bbox, not the rotated footprint.
-  const x1 = Math.min(...layers.map((l) => l.x));
-  const y1 = Math.min(...layers.map((l) => l.y));
-  const x2 = Math.max(...layers.map((l) => l.x + l.width));
-  const y2 = Math.max(...layers.map((l) => l.y + l.height));
-  return (
-    <g className="overlay" pointerEvents="none">
-      <rect
-        x={x1}
-        y={y1}
-        width={x2 - x1}
-        height={y2 - y1}
-        fill="none"
-        stroke="#1b1b1b"
-        strokeWidth="1"
-        strokeDasharray="4 3"
-        vectorEffect="non-scaling-stroke"
-      />
-    </g>
   );
 }
 
