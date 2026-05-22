@@ -30,6 +30,7 @@ src/
     PaintSection.jsx          # Fill/Stroke sidebar + StrokeStyleRow + PaintBox
     InlineTextEditor.jsx      # contentEditable div inside <foreignObject> for text editing
     RepeatSection.jsx         # Array/Radial repeat controls (holds own input state)
+    GenerativeSection.jsx     # palette cycle, randomize, scatter, confetti
     NumField.jsx              # labeled number input
 ```
 
@@ -92,6 +93,17 @@ share a union-bbox edge. `distributeSelected(axis)` keeps the outer two
 fixed and evenly spaces the rest by center. `createArray` and
 `createRadial` (both on `App`) duplicate the primary selection; the
 `RepeatSection` component owns the inputs driving them.
+
+**Generative:** `paletteIndex` state tracks which entry of `PALETTES`
+(in `constants.js`) is active; `PaintSection` renders swatches from this
+palette, and `cyclePalette()` remaps every fill/stroke/gradient stop
+slot-for-slot onto the next palette (custom hex colors not in the
+palette survive). `randomizeColors()` rolls a random palette color for
+each selected layer (or every layer if nothing is selected).
+`scatterClones(count, spread, jitterRotate, jitterScale)` sprays jittered
+copies of the primary selection within a radius. `confettiBurst(count)`
+sprays random tiny dots/squares/triangles across the canvas. The
+`GenerativeSection` component owns the input state for scatter + confetti.
 
 **Clipboard:** ⌘C serialises the selection as
 `{"_postervg": 1, "layers": [...]}` JSON to `navigator.clipboard`. ⌘V

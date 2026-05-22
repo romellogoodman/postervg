@@ -11,6 +11,8 @@ import {
   FONT_FAMILIES,
   FONT_FAMILY_BY_ID,
   GRID_PRESETS,
+  PALETTE,
+  PALETTES,
   SNAP_THRESHOLD,
   TEXT_LINE_HEIGHT,
   TOOLS,
@@ -38,6 +40,7 @@ import { LayerNode } from "./components/LayerNode.jsx";
 import { NumField } from "./components/NumField.jsx";
 import { PaintSection } from "./components/PaintSection.jsx";
 import { RepeatSection } from "./components/RepeatSection.jsx";
+import { GenerativeSection } from "./components/GenerativeSection.jsx";
 import {
   MultiSelectionOutline,
   SelectionOverlay,
@@ -60,6 +63,10 @@ function App() {
   const [canvasH, setCanvasH] = useState(DEFAULT_CANVAS_H);
   const [canvasBg, setCanvasBg] = useState(DEFAULT_CANVAS_BG);
   const [gridSize, setGridSize] = useState(0);
+  // Active palette index for cycle-palette. Purely presentational — drives
+  // which named palette a "CYCLE" press maps into next. Persisted via the
+  // autosaved draft so a reload lands on the last palette.
+  const [paletteIndex, setPaletteIndex] = useState(0);
   // Transient smart-guide lines shown while dragging a layer. Cleared on
   // pointerup. Each entry is { axis: 'x' | 'y', value: number }.
   const [activeGuides, setActiveGuides] = useState([]);
@@ -831,6 +838,153 @@ function App() {
     }
   };
 
+  // Generative: cycle to the next palette and remap every fill/stroke that
+  // matches the current palette slot-for-slot into the new palette. Colors
+  // that don't belong to the current palette are left alone so user-picked
+  // custom hues survive a cycle.
+  const cyclePalette = () => {
+    const from = PALETTES[paletteIndex].colors;
+    const next = (paletteIndex + 1) % PALETTES.length;
+    const to = PALETTES[next].colors;
+    const remap = (c) => {
+      const i = from.indexOf(c);
+      return i >= 0 ? to[i] : c;
+    };
+    const fromLower = from.map((c) => c.toLowerCase());
+    const remapCaseInsensitive = (c) => {
+      if (typeof c !== "string") return c;
+      const i = fromLower.indexOf(c.toLowerCase());
+      return i >= 0 ? to[i] : c;
+    };
+    setPaletteIndex(next);
+    commit((prev) =>
+      prev.map((l) => {
+        const patch = {};
+        if (l.fill && l.fill !== "none") patch.fill = remapCaseInsensitive(l.fill);
+        if (l.stroke && l.stroke !== "none")
+          patch.stroke = remapCaseInsensitive(l.stroke);
+        if (l.fillGradient) {
+          patch.fillGradient = {
+            ...l.fillGradient,
+            from: remapCaseInsensitive(l.fillGradient.from),
+            to: remapCaseInsensitive(l.fillGradient.to),
+          };
+        }
+        return Object.keys(patch).length ? { ...l, ...patch } : l;
+      }),
+    );
+  };
+
+  // Generative: assign a random palette color to each selected layer's fill
+  // (or to every layer if nothing is selected). Skips the current fill so
+  // the result visibly changes.
+  const randomizeColors = () => {
+    const palette = PALETTES[paletteIndex].colors;
+    const pickDifferent = (current) => {
+      if (palette.length <= 1) return palette[0];
+      let c = palette[Math.floor(Math.random() * palette.length)];
+      let tries = 5;
+      while (c === current && tries-- > 0) {
+        c = palette[Math.floor(Math.random() * palette.length)];
+      }
+      return c;
+    };
+    const targetSet = selectedIds.size ? selectedIds : null;
+    commit((prev) =>
+      prev.map((l) => {
+        if (targetSet && !targetSet.has(l.id)) return l;
+        return { ...l, fill: pickDifferent(l.fill) };
+      }),
+    );
+  };
+
+  // Generative: scatter `count` jittered clones of the primary selection
+  // within a `spread` radius, with optional random rotation and scale. A
+  // single commit so the whole burst undoes as one action.
+  const scatterClones = (count, spread, jitterRotate, jitterScale) => {
+    if (!selected || selectedLayers.length !== 1) return;
+    const base = selected;
+    const palette = PALETTES[paletteIndex].colors;
+    const news = [];
+    for (let i = 0; i < count; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = Math.random() * spread;
+      const ox = Math.cos(angle) * dist;
+      const oy = Math.sin(angle) * dist;
+      const scale = jitterScale
+        ? 0.5 + Math.random() * 1.0 // 0.5× – 1.5×
+        : 1;
+      const rotation = jitterRotate
+        ? (base.rotation ?? 0) + Math.random() * 360
+        : base.rotation ?? 0;
+      news.push({
+        ...base,
+        id: nextId(),
+        x: base.x + ox,
+        y: base.y + oy,
+        width: Math.max(2, base.width * scale),
+        height: Math.max(2, base.height * scale),
+        rotation,
+        fill: palette[Math.floor(Math.random() * palette.length)],
+        name: `${base.name} s${i + 1}`,
+      });
+    }
+    if (news.length) {
+      commit((prev) => [...prev, ...news]);
+      selectMany([base.id, ...news.map((n) => n.id)]);
+    }
+  };
+
+  // Generative: spawn `count` random tiny shapes (circles / triangles /
+  // squares) across the canvas with random palette fills. Spray-and-pray
+  // composition seed.
+  const confettiBurst = (count) => {
+    const palette = PALETTES[paletteIndex].colors;
+    const news = [];
+    for (let i = 0; i < count; i++) {
+      const size = 20 + Math.random() * 80;
+      const x = Math.random() * (canvasW - size);
+      const y = Math.random() * (canvasH - size);
+      const color = palette[Math.floor(Math.random() * palette.length)];
+      const pick = Math.random();
+      const common = {
+        id: nextId(),
+        visible: true,
+        locked: false,
+        x,
+        y,
+        width: size,
+        height: size,
+        rotation: Math.random() * 360,
+        fill: color,
+        stroke: "none",
+        strokeWidth: 0,
+        opacity: 0.85,
+        blendMode: "normal",
+        strokeDash: "solid",
+        strokeCap: "butt",
+        strokeJoin: "miter",
+      };
+      if (pick < 0.4) {
+        news.push({ ...common, type: "ellipse", name: "Confetti dot" });
+      } else if (pick < 0.75) {
+        news.push({ ...common, type: "rect", name: "Confetti square" });
+      } else {
+        news.push({
+          ...common,
+          type: "polygon",
+          sides: 3,
+          starRatio: 1,
+          name: "Confetti tri",
+        });
+      }
+    }
+    if (news.length) {
+      commit((prev) => [...prev, ...news]);
+      selectMany(news.map((n) => n.id));
+    }
+  };
+
   // Build the final exported SVG document as a string. Shared by the .svg
   // download and the PNG rasteriser, which draws this string into a canvas.
   const buildExportSvg = () => {
@@ -949,6 +1103,12 @@ ${body}
       if (typeof saved.canvasH === "number") setCanvasH(saved.canvasH);
       if (typeof saved.canvasBg === "string") setCanvasBg(saved.canvasBg);
       if (typeof saved.gridSize === "number") setGridSize(saved.gridSize);
+      if (
+        typeof saved.paletteIndex === "number" &&
+        saved.paletteIndex >= 0 &&
+        saved.paletteIndex < PALETTES.length
+      )
+        setPaletteIndex(saved.paletteIndex);
     } catch {
       // Corrupt draft — drop it silently rather than blocking startup.
     }
@@ -963,14 +1123,21 @@ ${body}
       try {
         localStorage.setItem(
           DRAFT_STORAGE_KEY,
-          JSON.stringify({ layers, canvasW, canvasH, canvasBg, gridSize }),
+          JSON.stringify({
+            layers,
+            canvasW,
+            canvasH,
+            canvasBg,
+            gridSize,
+            paletteIndex,
+          }),
         );
       } catch {
         // quota or disabled storage — silently skip
       }
     }, 400);
     return () => clearTimeout(h);
-  }, [layers, canvasW, canvasH, canvasBg, gridSize]);
+  }, [layers, canvasW, canvasH, canvasBg, gridSize, paletteIndex]);
 
   // In-progress shape preview
   const preview = useMemo(() => {
@@ -1077,6 +1244,10 @@ ${body}
           setStrokeWidth={setStrokeWidth}
           activeTarget={activeTarget}
           setActiveTarget={setActiveTarget}
+          palette={PALETTES[paletteIndex].colors.map((value, i) => ({
+            name: PALETTE[i]?.name ?? `slot${i}`,
+            value,
+          }))}
         />
 
         {selected && (
@@ -1614,6 +1785,15 @@ ${body}
         )}
 
         <div className="sidebar__spacer" />
+
+        <GenerativeSection
+          paletteIndex={paletteIndex}
+          selectedCount={selectedLayers.length}
+          onCyclePalette={cyclePalette}
+          onRandomizeColors={randomizeColors}
+          onScatter={scatterClones}
+          onConfettiBurst={confettiBurst}
+        />
 
         <div className="sidebar__section">
           <div className="sidebar__label">Canvas</div>

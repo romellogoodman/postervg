@@ -12,6 +12,57 @@ export const PALETTE = [
   { name: "white", value: "#ffffff" },
 ];
 
+// Alternate palettes for the Generative cycle. Each entry is a 7-value
+// color array indexed in the same order as `PALETTE`: cycling maps a
+// composition's colors slot-for-slot onto the next palette, so palette
+// swap feels like a recolour rather than a reshuffle.
+export const PALETTES = [
+  {
+    id: "default",
+    label: "DEFAULT",
+    colors: PALETTE.map((c) => c.value),
+  },
+  {
+    id: "warm",
+    label: "WARM",
+    colors: [
+      "#241710", // black
+      "#d0421f", // red
+      "#f4a24b", // yellow
+      "#ffd9a8", // blue → warm peach
+      "#a87550", // lilac → tan
+      "#f28a7a", // pink → coral
+      "#fff4e6", // white → cream
+    ],
+  },
+  {
+    id: "cool",
+    label: "COOL",
+    colors: [
+      "#0a1a2c", // black
+      "#2d5fa3", // red → deep blue
+      "#5fb9c7", // yellow → teal
+      "#a8d8ff", // blue
+      "#7a89b8", // lilac → slate
+      "#c8a4e8", // pink → soft purple
+      "#eef5fa", // white
+    ],
+  },
+  {
+    id: "mono",
+    label: "MONO",
+    colors: [
+      "#000000",
+      "#1f1f1f",
+      "#4a4a4a",
+      "#7a7a7a",
+      "#a3a3a3",
+      "#cfcfcf",
+      "#ffffff",
+    ],
+  },
+];
+
 // Starting canvas dimensions and background; all become mutable state inside
 // App so the user can switch between presets or pick a custom size.
 export const DEFAULT_CANVAS_W = 1200;

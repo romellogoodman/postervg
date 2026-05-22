@@ -2,13 +2,14 @@ import {
   CAP_OPTIONS,
   DASH_PRESETS,
   JOIN_OPTIONS,
-  PALETTE,
+  PALETTE as DEFAULT_PALETTE,
 } from "../constants.js";
 
 // Sidebar section for fill + stroke. When a layer is selected, clicks mutate
 // that layer via `commit`; with no selection, clicks adjust the defaults
 // used for new shapes (`fillColor` / `strokeColor` / `strokeWidth` state
-// owned by App).
+// owned by App). `palette` is the active palette; falls back to the default
+// if omitted so this component stays usable in isolation.
 export function PaintSection({
   selected,
   commit,
@@ -20,7 +21,9 @@ export function PaintSection({
   setStrokeWidth,
   activeTarget,
   setActiveTarget,
+  palette,
 }) {
+  const PALETTE = palette ?? DEFAULT_PALETTE;
   const displayFill = selected ? selected.fill ?? "none" : fillColor;
   const displayStroke = selected
     ? selected.strokeWidth
