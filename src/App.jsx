@@ -27,6 +27,40 @@ const CANVAS_PRESETS = [
   { id: "og", label: "BANNER", w: 1200, h: 630 },
 ];
 
+// Grid sizes (in SVG user units). 0 means "no grid, no snap"; any non-zero
+// value both renders a dot pattern and snaps drag positions to multiples.
+const GRID_PRESETS = [0, 8, 16, 24, 32, 64];
+
+// How close (in SVG units) the dragged edge/center must be to a candidate
+// before it snaps. Generous enough that users feel it without having to aim.
+const SNAP_THRESHOLD = 6;
+
+// For one axis: try snapping the left edge, right edge, and center of the
+// dragged layer to any of `candidates`. Returns the smallest correction (0 if
+// nothing is within threshold) and the candidate line that earned the snap.
+// Ties prefer the probe tested first (left > right > center) and the candidate
+// tested first, so the rendered guide is deterministic.
+function snapAxis(pos, size, candidates, threshold) {
+  let bestDelta = 0;
+  let bestGuide = null;
+  let bestAbs = Infinity;
+  // Probe the left edge first so it wins on perfect alignment to another
+  // layer's left edge, which is the most intuitive result.
+  const probes = [pos, pos + size / 2, pos + size];
+  for (const p of probes) {
+    for (const c of candidates) {
+      const d = c - p;
+      const abs = Math.abs(d);
+      if (abs < threshold && abs < bestAbs) {
+        bestAbs = abs;
+        bestDelta = d;
+        bestGuide = c;
+      }
+    }
+  }
+  return { delta: bestDelta, guide: bestGuide };
+}
+
 const TOOLS = [
   { id: "select", label: "SELECT", key: "V" },
   { id: "rect", label: "RECT", key: "R" },
@@ -489,6 +523,10 @@ function App() {
   const [canvasW, setCanvasW] = useState(DEFAULT_CANVAS_W);
   const [canvasH, setCanvasH] = useState(DEFAULT_CANVAS_H);
   const [canvasBg, setCanvasBg] = useState(DEFAULT_CANVAS_BG);
+  const [gridSize, setGridSize] = useState(0);
+  // Transient smart-guide lines shown while dragging a layer. Cleared on
+  // pointerup. Each entry is { axis: 'x' | 'y', value: number }.
+  const [activeGuides, setActiveGuides] = useState([]);
   // History: past/future hold snapshots of `layers`. Selection is UI state and
   // is deliberately not undoable.
   const [past, setPast] = useState([]);
@@ -821,8 +859,52 @@ function App() {
     }
     if (drag) {
       if (drag.mode === "move") {
-        const dx = pt.x - drag.startPointer.x;
-        const dy = pt.y - drag.startPointer.y;
+        let dx = pt.x - drag.startPointer.x;
+        let dy = pt.y - drag.startPointer.y;
+        // Snap the primary dragged layer's position to either a smart guide
+        // (another layer's edge / center, or a canvas midline) or the grid.
+        // Smart guides take precedence; grid is the fallback.
+        const sl = drag.startLayers[0];
+        if (sl) {
+          const nx = sl.x + dx;
+          const ny = sl.y + dy;
+          const others = layers.filter(
+            (l) => !drag.layerIds.includes(l.id),
+          );
+          const xCandidates = [
+            0,
+            canvasW / 2,
+            canvasW,
+            ...others.flatMap((l) => [l.x, l.x + l.width / 2, l.x + l.width]),
+          ];
+          const yCandidates = [
+            0,
+            canvasH / 2,
+            canvasH,
+            ...others.flatMap((l) => [l.y, l.y + l.height / 2, l.y + l.height]),
+          ];
+          const xSnap = snapAxis(nx, sl.width, xCandidates, SNAP_THRESHOLD);
+          const ySnap = snapAxis(ny, sl.height, yCandidates, SNAP_THRESHOLD);
+          dx += xSnap.delta;
+          dy += ySnap.delta;
+          if (gridSize > 0) {
+            // Grid fallback — only snap axes the smart guides didn't already
+            // catch, so alignment to other shapes wins over alignment to the
+            // grid.
+            if (xSnap.guide == null) {
+              const snapped = Math.round((sl.x + dx) / gridSize) * gridSize;
+              dx = snapped - sl.x;
+            }
+            if (ySnap.guide == null) {
+              const snapped = Math.round((sl.y + dy) / gridSize) * gridSize;
+              dy = snapped - sl.y;
+            }
+          }
+          const guides = [];
+          if (xSnap.guide != null) guides.push({ axis: "x", value: xSnap.guide });
+          if (ySnap.guide != null) guides.push({ axis: "y", value: ySnap.guide });
+          setActiveGuides(guides);
+        }
         // Multi-layer move: apply the same delta to every layer whose start
         // position was captured on pointerdown.
         const startById = new Map(drag.startLayers.map((l) => [l.id, l]));
@@ -992,6 +1074,7 @@ function App() {
       dragSnapshotRef.current = null;
     }
     setDrag(null);
+    if (activeGuides.length) setActiveGuides([]);
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {
@@ -1789,6 +1872,23 @@ ${body}
               onChange={(e) => setCanvasBg(e.target.value)}
             />
           </label>
+          <label
+            className="sidebar__field sidebar__field--wide"
+            style={{ marginTop: 6 }}
+          >
+            <span className="sidebar__field-label">GRID</span>
+            <select
+              className="sidebar__select"
+              value={gridSize}
+              onChange={(e) => setGridSize(Number(e.target.value))}
+            >
+              {GRID_PRESETS.map((g) => (
+                <option key={g} value={g}>
+                  {g === 0 ? "OFF" : `${g}PX`}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
 
         <div className="sidebar__section">
@@ -1842,6 +1942,28 @@ ${body}
             strokeWidth="1"
             vectorEffect="non-scaling-stroke"
           />
+          {gridSize > 0 && (
+            <>
+              <defs>
+                <pattern
+                  id="pvg-grid"
+                  width={gridSize}
+                  height={gridSize}
+                  patternUnits="userSpaceOnUse"
+                >
+                  <circle cx="0" cy="0" r="0.9" fill="rgba(27,27,27,0.35)" />
+                </pattern>
+              </defs>
+              <rect
+                x="0"
+                y="0"
+                width={canvasW}
+                height={canvasH}
+                fill="url(#pvg-grid)"
+                pointerEvents="none"
+              />
+            </>
+          )}
           {layers.map((l) =>
             // While inline-editing a text layer we render the editor in place
             // of the glyphs so the user doesn't see both at once.
@@ -1878,6 +2000,33 @@ ${body}
               );
             })()}
           {preview}
+          {activeGuides.map((g, i) =>
+            g.axis === "x" ? (
+              <line
+                key={`gx${i}`}
+                x1={g.value}
+                y1={0}
+                x2={g.value}
+                y2={canvasH}
+                stroke="#cc4722"
+                strokeWidth="1"
+                vectorEffect="non-scaling-stroke"
+                pointerEvents="none"
+              />
+            ) : (
+              <line
+                key={`gy${i}`}
+                x1={0}
+                y1={g.value}
+                x2={canvasW}
+                y2={g.value}
+                stroke="#cc4722"
+                strokeWidth="1"
+                vectorEffect="non-scaling-stroke"
+                pointerEvents="none"
+              />
+            ),
+          )}
           {/* Single-layer selection shows full handles; multi-select shows a
               union outline only (group transform handles come in a later
               milestone). */}
