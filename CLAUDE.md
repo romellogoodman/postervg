@@ -42,6 +42,10 @@ All UI and logic live in two files (intentional for a prototype):
 **Arrange / Repeat:** `alignSelected(edge)` moves every layer in the current selection to share a union-bbox edge (left/hcenter/right/top/vcenter/bottom). `distributeSelected(axis)` keeps the outer two layers fixed and evenly spaces the rest by center. `createArray(cols, rows, gapX, gapY)` duplicates the primary selection into a grid; `createRadial(count, radius, rotateWithRing)` sweeps copies around a circle and optionally rotates each copy to face outward. Both repeat helpers live on `App` and are driven by the `RepeatSection` component which owns its own input state.
 
 **Clipboard:** ⌘C serialises the selection as `{"_postervg": 1, "layers": [...]}` JSON to `navigator.clipboard`. ⌘V reads the clipboard and, if it matches that payload, rehydrates each layer with a fresh id and a +20/+20 offset. If the clipboard instead contains a raw `<svg>` string it falls back to the same path as file drop (one `svg`-type layer). Paste silently no-ops when clipboard access is blocked.
+
+**Autosave:** the `layers` array and `canvasW` / `canvasH` / `canvasBg` / `gridSize` are persisted to `localStorage[DRAFT_STORAGE_KEY]` on every change (debounced 400ms). Page load hydrates the draft in a mount effect; `CLEAR` both wipes state and removes the key so a reload doesn't resurrect the composition. Selection, history, and `editingId` are intentionally not saved.
+
+**Exports:** `buildExportSvg()` returns the final SVG string (shared by both paths). `doExport` wraps it in a Blob and triggers a `.svg` download; `doExportPng` loads that SVG into an `<Image>` and draws it into an offscreen `<canvas>` to produce a PNG Blob. Fonts loaded via `@import` may not render in the PNG if the browser hasn't fetched them yet; `document.fonts.ready` is awaited first as a best-effort mitigation.
 - `src/App.scss` — all styles, BEM, tokens at the top
 
 **State inside `App`:**
@@ -72,6 +76,10 @@ linters do not catch interaction regressions in an editor like this.
 
 ## Non-goals
 
-- No backend, no persistence, no auth.
-- No canvas/WebGL renderer — SVG DOM is the contract (exports are real SVG).
+- No backend, no auth, no remote sync. Local `localStorage` autosave is OK
+  (one slot, device-only); anything that talks to a server is out.
+- SVG DOM is the primary contract — the `.svg` export must stay hand-readable
+  and real SVG. A PNG export is allowed as a secondary convenience because it
+  rasterises the same SVG via an offscreen `<canvas>`; no new render engine
+  or WebGL path.
 - No design-system abstraction layer. Keep components local to `App.jsx`.

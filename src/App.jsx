@@ -31,6 +31,10 @@ const CANVAS_PRESETS = [
 // value both renders a dot pattern and snaps drag positions to multiples.
 const GRID_PRESETS = [0, 8, 16, 24, 32, 64];
 
+// localStorage key for the one-slot autosaved draft. Bump the version suffix
+// if the layer schema changes in a way that would break hydration.
+const DRAFT_STORAGE_KEY = "postervg:draft:v1";
+
 // How close (in SVG units) the dragged edge/center must be to a candidate
 // before it snaps. Generous enough that users feel it without having to aim.
 const SNAP_THRESHOLD = 6;
@@ -1294,7 +1298,9 @@ function App() {
     }
   };
 
-  const doExport = () => {
+  // Build the final exported SVG document as a string. Shared by the .svg
+  // download and the PNG rasteriser, which draws this string into a canvas.
+  const buildExportSvg = () => {
     const body = layers.map(serializeLayerToSvg).join("\n");
     // Collect distinct Google Font URLs used by any visible text layer and
     // embed them as @import in a <style> block — this lets downstream SVG
@@ -1324,20 +1330,63 @@ function App() {
       .join("");
     const inner = fontStyleBlock + gradientDefs;
     const defsBlock = inner ? `<defs>${inner}</defs>\n` : "";
-    const out = `<?xml version="1.0" encoding="UTF-8"?>
+    return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${canvasW} ${canvasH}" width="${canvasW}" height="${canvasH}">
 ${defsBlock}<rect width="${canvasW}" height="${canvasH}" fill="${canvasBg}"/>
 ${body}
 </svg>`;
-    const blob = new Blob([out], { type: "image/svg+xml" });
+  };
+
+  const downloadBlob = (blob, filename) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "postervg.svg";
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
+  };
+
+  const doExport = () => {
+    const svg = buildExportSvg();
+    downloadBlob(new Blob([svg], { type: "image/svg+xml" }), "postervg.svg");
+  };
+
+  // Rasterise the SVG string into a PNG by round-tripping through an
+  // <img> + <canvas>. Works entirely client-side. Known limitation: fonts
+  // loaded via @import may not render if the browser hasn't fetched them by
+  // the time drawImage runs; preloading via document.fonts.ready helps.
+  const doExportPng = async () => {
+    const svgString = buildExportSvg();
+    try {
+      if (document.fonts?.ready) await document.fonts.ready;
+    } catch {
+      // ignore
+    }
+    const svgBlob = new Blob([svgString], { type: "image/svg+xml" });
+    const url = URL.createObjectURL(svgBlob);
+    try {
+      const img = new Image();
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+        img.src = url;
+      });
+      const canvas = document.createElement("canvas");
+      canvas.width = canvasW;
+      canvas.height = canvasH;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, canvasW, canvasH);
+      await new Promise((resolve) => {
+        canvas.toBlob((blob) => {
+          if (blob) downloadBlob(blob, "postervg.png");
+          resolve();
+        }, "image/png");
+      });
+    } finally {
+      URL.revokeObjectURL(url);
+    }
   };
 
   const doClear = () => {
@@ -1345,8 +1394,50 @@ ${body}
     if (window.confirm("Clear all layers?")) {
       commit([]);
       clearSelection();
+      // Clear the autosaved draft too so a reload doesn't resurrect what the
+      // user just deleted.
+      try {
+        localStorage.removeItem(DRAFT_STORAGE_KEY);
+      } catch {
+        // ignore
+      }
     }
   };
+
+  // Hydrate the one-slot draft on mount. We do this in an effect (not in
+  // useState initialisers) so a parse failure doesn't crash the first render.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (Array.isArray(saved.layers)) setLayers(saved.layers);
+      if (typeof saved.canvasW === "number") setCanvasW(saved.canvasW);
+      if (typeof saved.canvasH === "number") setCanvasH(saved.canvasH);
+      if (typeof saved.canvasBg === "string") setCanvasBg(saved.canvasBg);
+      if (typeof saved.gridSize === "number") setGridSize(saved.gridSize);
+    } catch {
+      // Corrupt draft — drop it silently rather than blocking startup.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Autosave after quiet for 400ms so rapid edits (sliders, drags) don't
+  // hammer localStorage. Persists the full document state minus transient UI
+  // (selection, editingId, history).
+  useEffect(() => {
+    const h = setTimeout(() => {
+      try {
+        localStorage.setItem(
+          DRAFT_STORAGE_KEY,
+          JSON.stringify({ layers, canvasW, canvasH, canvasBg, gridSize }),
+        );
+      } catch {
+        // quota or disabled storage — silently skip
+      }
+    }, 400);
+    return () => clearTimeout(h);
+  }, [layers, canvasW, canvasH, canvasBg, gridSize]);
 
   // In-progress shape preview
   const preview = useMemo(() => {
@@ -2062,7 +2153,10 @@ ${body}
             CLEAR
           </button>
           <button className="sidebar__button" onClick={doExport}>
-            EXPORT
+            EXPORT SVG
+          </button>
+          <button className="sidebar__button" onClick={doExportPng}>
+            EXPORT PNG
           </button>
         </div>
       </aside>

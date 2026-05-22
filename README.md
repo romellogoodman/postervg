@@ -22,7 +22,8 @@ everything in a layer stack, and export the result as a single SVG.
 - **Arrange**: with two or more layers selected, align left/center/right or top/middle/bottom; with three or more, distribute horizontally or vertically
 - **Repeat**: turn any single layer into a grid (cols × rows + gaps) or a radial ring (count + radius, with optional rotate-to-face-outward)
 - **Clipboard**: `⌘C` copies the selection, `⌘V` pastes either your own layers (offset) or any raw SVG string
-- **Export**: save the composition as a standalone `.svg`
+- **Autosave**: your composition is kept in `localStorage` and restored on reload; `CLEAR` removes the draft too
+- **Export**: save as a standalone `.svg` or rasterize to `.png`
 
 ## Quick Start
 
