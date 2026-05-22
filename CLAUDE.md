@@ -39,6 +39,8 @@ All UI and logic live in two files (intentional for a prototype):
 
 **Snap & guides:** while dragging, `snapAxis` (file top) tests the left/center/right edges of the dragged layer's bounding box against every other layer's edges + centers and the canvas midlines; matches within `SNAP_THRESHOLD` (6 SVG units) snap the drag and surface a red guide line across the canvas (`activeGuides` state, cleared on pointerup). When no smart guide fires and `gridSize > 0`, the fallback rounds the position to the nearest grid multiple.
 
+**Arrange / Repeat:** `alignSelected(edge)` moves every layer in the current selection to share a union-bbox edge (left/hcenter/right/top/vcenter/bottom). `distributeSelected(axis)` keeps the outer two layers fixed and evenly spaces the rest by center. `createArray(cols, rows, gapX, gapY)` duplicates the primary selection into a grid; `createRadial(count, radius, rotateWithRing)` sweeps copies around a circle and optionally rotates each copy to face outward. Both repeat helpers live on `App` and are driven by the `RepeatSection` component which owns its own input state.
+
 **Clipboard:** ⌘C serialises the selection as `{"_postervg": 1, "layers": [...]}` JSON to `navigator.clipboard`. ⌘V reads the clipboard and, if it matches that payload, rehydrates each layer with a fresh id and a +20/+20 offset. If the clipboard instead contains a raw `<svg>` string it falls back to the same path as file drop (one `svg`-type layer). Paste silently no-ops when clipboard access is blocked.
 - `src/App.scss` — all styles, BEM, tokens at the top
 

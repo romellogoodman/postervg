@@ -19,6 +19,8 @@ everything in a layer stack, and export the result as a single SVG.
 - **Layers Panel**: reorder, hide, lock, rename, delete
 - **Canvas**: size presets (landscape, square, portrait, A4 poster, OG banner) or custom W×H; background color picker; optional grid (off / 8 / 16 / 24 / 32 / 64 px) that both displays dots and snaps drags
 - **Smart Guides**: dragging a layer shows red alignment guides when its edges or center line up with another layer or a canvas midline, snapping it there
+- **Arrange**: with two or more layers selected, align left/center/right or top/middle/bottom; with three or more, distribute horizontally or vertically
+- **Repeat**: turn any single layer into a grid (cols × rows + gaps) or a radial ring (count + radius, with optional rotate-to-face-outward)
 - **Clipboard**: `⌘C` copies the selection, `⌘V` pastes either your own layers (offset) or any raw SVG string
 - **Export**: save the composition as a standalone `.svg`
 

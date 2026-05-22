@@ -303,6 +303,54 @@ input {
     border: 1px solid var(--ohmg-black);
   }
 
+  &__arrange {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px;
+
+    &--two {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+
+  &__arrange-btn {
+    border: 1px solid var(--ohmg-black);
+    background: var(--ohmg-white);
+    padding: 6px 0;
+    font-size: var(--size-body);
+    font-weight: 600;
+    cursor: pointer;
+
+    &:hover:not(:disabled) {
+      background: var(--ohmg-black);
+      color: var(--ohmg-white);
+    }
+
+    &:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
+    &--wide {
+      grid-column: span 3;
+      font-size: var(--size-label);
+      letter-spacing: 0.08em;
+    }
+  }
+
+  &__toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: var(--size-body);
+    cursor: pointer;
+
+    input {
+      margin: 0;
+      accent-color: var(--ohmg-black);
+    }
+  }
+
   &__segmented {
     display: grid;
     grid-template-columns: auto 1fr;

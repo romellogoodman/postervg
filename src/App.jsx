@@ -1187,6 +1187,113 @@ function App() {
     });
   };
 
+  // Align every selected layer to a shared edge of the selection's union bbox.
+  const alignSelected = (edge) => {
+    if (selectedLayers.length < 2) return;
+    const sel = selectedLayers;
+    const minX = Math.min(...sel.map((l) => l.x));
+    const maxX = Math.max(...sel.map((l) => l.x + l.width));
+    const minY = Math.min(...sel.map((l) => l.y));
+    const maxY = Math.max(...sel.map((l) => l.y + l.height));
+    const setX = { left: () => minX, hcenter: (w) => (minX + maxX) / 2 - w / 2, right: (w) => maxX - w };
+    const setY = { top: () => minY, vcenter: (h) => (minY + maxY) / 2 - h / 2, bottom: (h) => maxY - h };
+    commit((prev) =>
+      prev.map((l) => {
+        if (!selectedIds.has(l.id)) return l;
+        if (edge in setX) return { ...l, x: setX[edge](l.width) };
+        if (edge in setY) return { ...l, y: setY[edge](l.height) };
+        return l;
+      }),
+    );
+  };
+
+  // Evenly redistribute the selection on one axis: keep the outer two fixed
+  // and slot every layer in between at equal center-to-center spacing.
+  const distributeSelected = (axis) => {
+    if (selectedLayers.length < 3) return;
+    const sorted = [...selectedLayers].sort((a, b) =>
+      axis === "x" ? a.x - b.x : a.y - b.y,
+    );
+    const getC = (l) =>
+      axis === "x" ? l.x + l.width / 2 : l.y + l.height / 2;
+    const first = sorted[0];
+    const last = sorted[sorted.length - 1];
+    const step = (getC(last) - getC(first)) / (sorted.length - 1);
+    const deltaById = new Map();
+    sorted.forEach((l, i) => {
+      deltaById.set(l.id, getC(first) + i * step - getC(l));
+    });
+    commit((prev) =>
+      prev.map((l) => {
+        const d = deltaById.get(l.id);
+        if (d == null) return l;
+        return axis === "x" ? { ...l, x: l.x + d } : { ...l, y: l.y + d };
+      }),
+    );
+  };
+
+  // Grid duplicate of the primary selection. Count×Count feels more intuitive
+  // than separate row/col knobs at this scope, but we keep them separate so
+  // users can make strips.
+  const createArray = (cols, rows, gapX, gapY) => {
+    if (!selected || selectedLayers.length !== 1) return;
+    const base = selected;
+    const news = [];
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (r === 0 && c === 0) continue;
+        news.push({
+          ...base,
+          id: nextId(),
+          x: base.x + c * (base.width + gapX),
+          y: base.y + r * (base.height + gapY),
+          name: `${base.name} ${r * cols + c + 1}`,
+        });
+      }
+    }
+    if (news.length) {
+      commit((prev) => [...prev, ...news]);
+      selectMany([base.id, ...news.map((n) => n.id)]);
+    }
+  };
+
+  // Radial duplicate: place `count` copies around a circle of `radius` centred
+  // on the primary selection. Each copy is also rotated to face outward so
+  // arrows/triangles/text follow the circle.
+  const createRadial = (count, radius, rotateWithRing) => {
+    if (!selected || selectedLayers.length !== 1) return;
+    const base = selected;
+    const bcx = base.x + base.width / 2;
+    const bcy = base.y + base.height / 2;
+    // Keep the original where it is (angle 0); clones sweep around.
+    const news = [];
+    for (let i = 1; i < count; i++) {
+      const a = (i * 2 * Math.PI) / count;
+      // Move the layer's center by the ring offset, which is the vector from
+      // the ring centre (= base centre) to the new position. base stays at
+      // (bcx - radius, 0) relative to ring centre (bcx, bcy - 0)? Simpler:
+      // position each clone's centre at (bcx + radius*(cos a - 1), bcy +
+      // radius*sin a). This keeps the original on the circle and rotates
+      // around the centre at (bcx - radius, bcy).
+      const cxClone = bcx + radius * (Math.cos(a) - 1);
+      const cyClone = bcy + radius * Math.sin(a);
+      news.push({
+        ...base,
+        id: nextId(),
+        x: cxClone - base.width / 2,
+        y: cyClone - base.height / 2,
+        rotation: rotateWithRing
+          ? (base.rotation ?? 0) + (a * 180) / Math.PI
+          : base.rotation ?? 0,
+        name: `${base.name} r${i}`,
+      });
+    }
+    if (news.length) {
+      commit((prev) => [...prev, ...news]);
+      selectMany([base.id, ...news.map((n) => n.id)]);
+    }
+  };
+
   const doExport = () => {
     const body = layers.map(serializeLayerToSvg).join("\n");
     // Collect distinct Google Font URLs used by any visible text layer and
@@ -1456,6 +1563,65 @@ ${body}
               </select>
             </label>
           </div>
+        )}
+
+        {selectedLayers.length >= 2 && (
+          <div className="sidebar__section">
+            <div className="sidebar__label">
+              Arrange
+              <span className="sidebar__label-meta">
+                · {selectedLayers.length} layers
+              </span>
+            </div>
+            <div className="sidebar__arrange">
+              {[
+                { id: "left", label: "⊢", title: "Align left" },
+                { id: "hcenter", label: "⊣⊢", title: "Align horizontal center" },
+                { id: "right", label: "⊣", title: "Align right" },
+                { id: "top", label: "⊤", title: "Align top" },
+                { id: "vcenter", label: "⊥⊤", title: "Align vertical center" },
+                { id: "bottom", label: "⊥", title: "Align bottom" },
+              ].map((b) => (
+                <button
+                  key={b.id}
+                  className="sidebar__arrange-btn"
+                  onClick={() => alignSelected(b.id)}
+                  title={b.title}
+                >
+                  {b.label}
+                </button>
+              ))}
+            </div>
+            <div
+              className="sidebar__arrange sidebar__arrange--two"
+              style={{ marginTop: 6 }}
+            >
+              <button
+                className="sidebar__arrange-btn"
+                onClick={() => distributeSelected("x")}
+                disabled={selectedLayers.length < 3}
+                title="Distribute horizontally (needs 3+)"
+              >
+                DIST H
+              </button>
+              <button
+                className="sidebar__arrange-btn"
+                onClick={() => distributeSelected("y")}
+                disabled={selectedLayers.length < 3}
+                title="Distribute vertically (needs 3+)"
+              >
+                DIST V
+              </button>
+            </div>
+          </div>
+        )}
+
+        {selectedLayers.length === 1 && (
+          <RepeatSection
+            selected={selected}
+            onArray={createArray}
+            onRadial={createRadial}
+          />
         )}
 
         {selected && selected.fillGradient && (
@@ -2567,6 +2733,57 @@ function InlineTextEditor({ layer, commit, onExit }) {
         display: "inline-block",
       }}
     />
+  );
+}
+
+// Array + radial repeat controls for the primary selection. Each holds its
+// own local state so the inputs don't bloat App and its values persist while
+// the user tweaks before pressing the commit button.
+function RepeatSection({ selected, onArray, onRadial }) {
+  const [cols, setCols] = useState(3);
+  const [rows, setRows] = useState(1);
+  const [gapX, setGapX] = useState(20);
+  const [gapY, setGapY] = useState(20);
+  const [count, setCount] = useState(6);
+  const [radius, setRadius] = useState(160);
+  const [rotateWithRing, setRotateWithRing] = useState(false);
+  if (!selected || selected.locked) return null;
+  return (
+    <div className="sidebar__section">
+      <div className="sidebar__label">Repeat</div>
+      <div className="sidebar__fields">
+        <NumField label="Cols" value={cols} onChange={(v) => setCols(Math.max(1, Math.round(v)))} />
+        <NumField label="Rows" value={rows} onChange={(v) => setRows(Math.max(1, Math.round(v)))} />
+        <NumField label="GapX" value={gapX} onChange={setGapX} />
+        <NumField label="GapY" value={gapY} onChange={setGapY} />
+      </div>
+      <button
+        className="sidebar__button"
+        style={{ marginTop: 6 }}
+        onClick={() => onArray(cols, rows, gapX, gapY)}
+      >
+        ARRAY
+      </button>
+      <div className="sidebar__fields" style={{ marginTop: 6 }}>
+        <NumField label="Num" value={count} onChange={(v) => setCount(Math.max(2, Math.round(v)))} />
+        <NumField label="R" value={radius} onChange={(v) => setRadius(Math.max(1, Math.round(v)))} />
+      </div>
+      <label className="sidebar__toggle" style={{ marginTop: 4 }}>
+        <input
+          type="checkbox"
+          checked={rotateWithRing}
+          onChange={(e) => setRotateWithRing(e.target.checked)}
+        />
+        <span>Rotate copies</span>
+      </label>
+      <button
+        className="sidebar__button"
+        style={{ marginTop: 6 }}
+        onClick={() => onRadial(count, radius, rotateWithRing)}
+      >
+        RADIAL
+      </button>
+    </div>
   );
 }
 
