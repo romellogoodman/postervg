@@ -34,7 +34,11 @@ import {
   layerOpacity,
   serializeGradientDef,
 } from "./lib/layers.js";
-import { parseSvgFile, serializeLayerToSvg } from "./lib/svgIO.js";
+import {
+  parseSvgFile,
+  sanitizeImportedLayer,
+  serializeLayerToSvg,
+} from "./lib/svgIO.js";
 import { InlineTextEditor } from "./components/InlineTextEditor.jsx";
 import { LayerNode } from "./components/LayerNode.jsx";
 import { NumField } from "./components/NumField.jsx";
@@ -219,12 +223,16 @@ function App() {
             try {
               const parsed = JSON.parse(text);
               if (parsed && parsed._postervg && Array.isArray(parsed.layers)) {
-                newLayers = parsed.layers.map((l) => ({
-                  ...l,
-                  id: nextId(),
-                  x: (l.x ?? 0) + 20,
-                  y: (l.y ?? 0) + 20,
-                }));
+                // Clipboard contents are untrusted: re-sanitise any imported
+                // SVG markup before it re-enters state / localStorage.
+                newLayers = parsed.layers.map((l) =>
+                  sanitizeImportedLayer({
+                    ...l,
+                    id: nextId(),
+                    x: (l.x ?? 0) + 20,
+                    y: (l.y ?? 0) + 20,
+                  }),
+                );
               }
             } catch {
               // not JSON; fall through
@@ -1098,7 +1106,10 @@ ${body}
       const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
       if (!raw) return;
       const saved = JSON.parse(raw);
-      if (Array.isArray(saved.layers)) setLayers(saved.layers);
+      // A tampered draft could carry stored XSS in an svg layer's markup;
+      // re-sanitise on load before it re-enters the DOM.
+      if (Array.isArray(saved.layers))
+        setLayers(saved.layers.map(sanitizeImportedLayer));
       if (typeof saved.canvasW === "number") setCanvasW(saved.canvasW);
       if (typeof saved.canvasH === "number") setCanvasH(saved.canvasH);
       if (typeof saved.canvasBg === "string") setCanvasBg(saved.canvasBg);
