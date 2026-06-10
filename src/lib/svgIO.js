@@ -1,4 +1,41 @@
+import DOMPurify from "dompurify";
+
 import { TEXT_LINE_HEIGHT } from "../constants.js";
+
+// Sanitise a fragment of SVG markup with DOMPurify's SVG profile. Strips
+// event handlers (onload/onerror/onbegin), <script>, javascript: URLs and
+// other active content while keeping presentational SVG elements/attributes.
+export function sanitizeSvgMarkup(markup) {
+  return DOMPurify.sanitize(String(markup ?? ""), {
+    USE_PROFILES: { svg: true, svgFilters: true },
+  });
+}
+
+// Drop event-handler ("on*") and other unsafe entries from a root-attribute
+// map round-tripped from imported/pasted SVG or restored drafts.
+export function sanitizeRootAttrs(attrs) {
+  const safe = {};
+  for (const [k, v] of Object.entries(attrs || {})) {
+    const name = k.toLowerCase();
+    if (name.startsWith("on")) continue;
+    const value = String(v);
+    if (/^\s*(javascript|data):/i.test(value)) continue;
+    safe[k] = v;
+  }
+  return safe;
+}
+
+// Re-sanitise an `svg`-type layer whose markup may originate from an
+// untrusted source (clipboard JSON, a restored localStorage draft). Other
+// layer types carry no raw markup and pass through unchanged.
+export function sanitizeImportedLayer(layer) {
+  if (!layer || layer.type !== "svg") return layer;
+  return {
+    ...layer,
+    svgContent: sanitizeSvgMarkup(layer.svgContent),
+    rootAttrs: sanitizeRootAttrs(layer.rootAttrs),
+  };
+}
 import { bboxCenter, polygonPoints } from "./geometry.js";
 import {
   fillPaintValue,
@@ -13,7 +50,10 @@ import { textAnchorX } from "./text.js";
 // Parse a user-supplied SVG file (or clipboard string) into the minimal
 // descriptor needed to place it as an `svg`-type layer.
 export function parseSvgFile(text) {
-  const doc = new DOMParser().parseFromString(text, "image/svg+xml");
+  // Sanitise before parsing so event handlers / <script> / javascript: URLs
+  // never reach the descriptor we persist and inject back into the DOM.
+  const clean = sanitizeSvgMarkup(text);
+  const doc = new DOMParser().parseFromString(clean, "image/svg+xml");
   const root = doc.querySelector("svg");
   if (!root) return null;
   const vb = root.getAttribute("viewBox");
@@ -48,7 +88,7 @@ export function parseSvgFile(text) {
   return {
     viewBox: `${vx} ${vy} ${vw} ${vh}`,
     innerHtml: root.innerHTML,
-    rootAttrs,
+    rootAttrs: sanitizeRootAttrs(rootAttrs),
     naturalW: attrW,
     naturalH: attrH,
   };
