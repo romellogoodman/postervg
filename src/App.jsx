@@ -1150,6 +1150,10 @@ ${body}
       canvas.width = canvasW;
       canvas.height = canvasH;
       const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        window.alert("PNG export failed: 2D canvas context unavailable.");
+        return;
+      }
       ctx.drawImage(img, 0, 0, canvasW, canvasH);
       await new Promise((resolve) => {
         canvas.toBlob((blob) => {
