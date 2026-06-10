@@ -985,93 +985,6 @@ function App() {
     );
   };
 
-  // Generative: scatter `count` jittered clones of the primary selection
-  // within a `spread` radius, with optional random rotation and scale. A
-  // single commit so the whole burst undoes as one action.
-  const scatterClones = (count, spread, jitterRotate, jitterScale) => {
-    if (!selected || selectedLayers.length !== 1) return;
-    const base = selected;
-    const palette = PALETTES[paletteIndex].colors;
-    const news = [];
-    for (let i = 0; i < count; i++) {
-      const angle = Math.random() * Math.PI * 2;
-      const dist = Math.random() * spread;
-      const ox = Math.cos(angle) * dist;
-      const oy = Math.sin(angle) * dist;
-      const scale = jitterScale
-        ? 0.5 + Math.random() * 1.0 // 0.5× – 1.5×
-        : 1;
-      const rotation = jitterRotate
-        ? (base.rotation ?? 0) + Math.random() * 360
-        : base.rotation ?? 0;
-      news.push({
-        ...base,
-        id: nextId(),
-        x: base.x + ox,
-        y: base.y + oy,
-        width: Math.max(2, base.width * scale),
-        height: Math.max(2, base.height * scale),
-        rotation,
-        fill: palette[Math.floor(Math.random() * palette.length)],
-        name: `${base.name} s${i + 1}`,
-      });
-    }
-    if (news.length) {
-      commit((prev) => [...prev, ...news]);
-      selectMany([base.id, ...news.map((n) => n.id)]);
-    }
-  };
-
-  // Generative: spawn `count` random tiny shapes (circles / triangles /
-  // squares) across the canvas with random palette fills. Spray-and-pray
-  // composition seed.
-  const confettiBurst = (count) => {
-    const palette = PALETTES[paletteIndex].colors;
-    const news = [];
-    for (let i = 0; i < count; i++) {
-      const size = 20 + Math.random() * 80;
-      const x = Math.random() * (canvasW - size);
-      const y = Math.random() * (canvasH - size);
-      const color = palette[Math.floor(Math.random() * palette.length)];
-      const pick = Math.random();
-      const common = {
-        id: nextId(),
-        visible: true,
-        locked: false,
-        x,
-        y,
-        width: size,
-        height: size,
-        rotation: Math.random() * 360,
-        fill: color,
-        stroke: "none",
-        strokeWidth: 0,
-        opacity: 0.85,
-        blendMode: "normal",
-        strokeDash: "solid",
-        strokeCap: "butt",
-        strokeJoin: "miter",
-      };
-      if (pick < 0.4) {
-        news.push({ ...common, type: "ellipse", name: "Confetti dot" });
-      } else if (pick < 0.75) {
-        news.push({ ...common, type: "rect", name: "Confetti square" });
-      } else {
-        news.push({
-          ...common,
-          type: "polygon",
-          sides: 3,
-          starRatio: 1,
-          name: "Confetti tri",
-        });
-      }
-    }
-    if (news.length) {
-      commit((prev) => [...prev, ...news]);
-      selectMany(news.map((n) => n.id));
-    }
-  };
-
   // Build the final exported SVG document as a string. Shared by the .svg
   // download and the PNG rasteriser, which draws this string into a canvas.
   const buildExportSvg = () => {
@@ -1885,8 +1798,6 @@ ${body}
           selectedCount={selectedLayers.length}
           onCyclePalette={cyclePalette}
           onRandomizeColors={randomizeColors}
-          onScatter={scatterClones}
-          onConfettiBurst={confettiBurst}
         />
 
         <div className="sidebar__section">
