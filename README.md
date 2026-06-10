@@ -51,6 +51,9 @@ npm run dev
 | `⌘C` / `Ctrl+C` | copy selection |
 | `⌘V` / `Ctrl+V` | paste (layers or raw SVG) |
 | `Shift`+click | add/remove layer from selection |
+| scroll / trackpad | zoom in/out (anchored on cursor) |
+| `Space`+drag | pan the canvas |
+| `0` | reset zoom & pan to fit |
 | `Esc` | deselect |
 
 ## Tech Stack

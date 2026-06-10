@@ -67,6 +67,12 @@ function App() {
   const [canvasH, setCanvasH] = useState(DEFAULT_CANVAS_H);
   const [canvasBg, setCanvasBg] = useState(DEFAULT_CANVAS_BG);
   const [gridSize, setGridSize] = useState(0);
+  // Viewport pan/zoom over the canvas. `null` means "fit to canvas" (the
+  // viewBox tracks the canvas dimensions); once the user zooms or pans we
+  // store an explicit { x, y, w, h } viewBox. Press "0" to reset to fit.
+  const [view, setView] = useState(null);
+  // True while the spacebar is held, which turns a canvas drag into a pan.
+  const [spaceHeld, setSpaceHeld] = useState(false);
   // Active palette index for cycle-palette. Purely presentational — drives
   // which named palette a "CYCLE" press maps into next. Persisted via the
   // autosaved draft so a reload lands on the last palette.
@@ -162,6 +168,54 @@ function App() {
     return { x: p.x, y: p.y };
   }, []);
 
+  // Wheel-to-zoom, anchored on the cursor. Bound as a non-passive native
+  // listener so we can preventDefault the page scroll. `clientToSvg` reads
+  // the live CTM, so the point under the cursor stays fixed across zoom.
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const onWheel = (e) => {
+      e.preventDefault();
+      const cur = view ?? { x: 0, y: 0, w: canvasW, h: canvasH };
+      const p = clientToSvg(e.clientX, e.clientY);
+      const minW = Math.min(canvasW, canvasH) / 50; // ~50x max zoom-in
+      const maxW = canvasW * 8; // 8x max zoom-out
+      const next = Math.max(minW, Math.min(maxW, cur.w * Math.exp(e.deltaY * 0.0015)));
+      const scale = next / cur.w;
+      setView({
+        x: p.x - (p.x - cur.x) * scale,
+        y: p.y - (p.y - cur.y) * scale,
+        w: next,
+        h: cur.h * scale,
+      });
+    };
+    svg.addEventListener("wheel", onWheel, { passive: false });
+    return () => svg.removeEventListener("wheel", onWheel);
+  }, [view, canvasW, canvasH, clientToSvg]);
+
+  // Track the spacebar (held = pan mode) without stealing it from text inputs.
+  useEffect(() => {
+    const isEditable = (t) =>
+      t instanceof HTMLInputElement ||
+      t instanceof HTMLTextAreaElement ||
+      (t instanceof HTMLElement && t.isContentEditable);
+    const down = (e) => {
+      if (e.code === "Space" && !e.repeat && !isEditable(e.target)) {
+        e.preventDefault();
+        setSpaceHeld(true);
+      }
+    };
+    const up = (e) => {
+      if (e.code === "Space") setSpaceHeld(false);
+    };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+    };
+  }, []);
+
   // Keyboard shortcuts
   useEffect(() => {
     const onKey = (e) => {
@@ -193,6 +247,7 @@ function App() {
       else if (k === "l" && !mod) setTool("line");
       else if (k === "p" && !mod) setTool("polygon");
       else if (k === "t" && !mod) setTool("text");
+      else if (k === "0" && !mod) setView(null);
       else if (k === "escape") clearSelection();
       else if (k === "backspace" || k === "delete") {
         if (selectedIds.size) {
@@ -336,6 +391,17 @@ function App() {
   // Pointer handling on the SVG canvas
   const handleCanvasPointerDown = (e) => {
     if (e.button !== 0) return;
+    // Spacebar held: pan the viewport instead of interacting with layers.
+    if (spaceHeld) {
+      const cur = view ?? { x: 0, y: 0, w: canvasW, h: canvasH };
+      setDrag({
+        mode: "pan",
+        startClient: { x: e.clientX, y: e.clientY },
+        startView: cur,
+      });
+      e.currentTarget.setPointerCapture(e.pointerId);
+      return;
+    }
     const pt = clientToSvg(e.clientX, e.clientY);
     const hitLayerId = e.target.closest("[data-layer-id]")?.dataset?.layerId;
 
@@ -399,6 +465,19 @@ function App() {
   };
 
   const handleCanvasPointerMove = (e) => {
+    if (drag && drag.mode === "pan") {
+      const svg = svgRef.current;
+      const rect = svg.getBoundingClientRect();
+      const sx = drag.startView.w / rect.width;
+      const sy = drag.startView.h / rect.height;
+      setView({
+        x: drag.startView.x - (e.clientX - drag.startClient.x) * sx,
+        y: drag.startView.y - (e.clientY - drag.startClient.y) * sy,
+        w: drag.startView.w,
+        h: drag.startView.h,
+      });
+      return;
+    }
     const pt = clientToSvg(e.clientX, e.clientY);
     if (drawing) {
       setDrawing((d) => (d ? { ...d, current: pt } : d));
@@ -1911,7 +1990,11 @@ ${body}
         <svg
           ref={svgRef}
           className="canvas"
-          viewBox={`0 0 ${canvasW} ${canvasH}`}
+          viewBox={
+            view
+              ? `${view.x} ${view.y} ${view.w} ${view.h}`
+              : `0 0 ${canvasW} ${canvasH}`
+          }
           preserveAspectRatio="xMidYMid meet"
           onPointerDown={handleCanvasPointerDown}
           onPointerMove={handleCanvasPointerMove}
@@ -1926,8 +2009,13 @@ ${body}
             }
           }}
           style={{
-            cursor:
-              tool === "select" ? "default" : drawing ? "crosshair" : "crosshair",
+            cursor: spaceHeld
+              ? drag?.mode === "pan"
+                ? "grabbing"
+                : "grab"
+              : tool === "select"
+                ? "default"
+                : "crosshair",
           }}
         >
           <rect
