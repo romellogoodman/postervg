@@ -183,12 +183,12 @@ function App() {
         redo();
         return;
       }
-      if (k === "v") setTool("select");
-      else if (k === "r") setTool("rect");
-      else if (k === "o") setTool("ellipse");
-      else if (k === "l") setTool("line");
-      else if (k === "p") setTool("polygon");
-      else if (k === "t") setTool("text");
+      if (k === "v" && !mod) setTool("select");
+      else if (k === "r" && !mod) setTool("rect");
+      else if (k === "o" && !mod) setTool("ellipse");
+      else if (k === "l" && !mod) setTool("line");
+      else if (k === "p" && !mod) setTool("polygon");
+      else if (k === "t" && !mod) setTool("text");
       else if (k === "escape") clearSelection();
       else if (k === "backspace" || k === "delete") {
         if (selectedIds.size) {
